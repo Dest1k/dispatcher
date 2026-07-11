@@ -29,6 +29,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from .domain import RunState
+from .persistence import RunStore
 from .providers import Steering, Usage, make_adapter, run_agent
 from .providers.base import Message
 from .sandbox import make_sandbox
@@ -108,11 +110,13 @@ class Orchestrator(QThread):
     run_finished = Signal(dict)
     run_error = Signal(str)
 
-    def __init__(self, config, project: dict, instruction: str):
+    def __init__(self, config, project: dict, instruction: str, store=None):
         super().__init__()
         self.config = config
         self.project = project
         self.instruction = instruction
+        self.store: RunStore = store or RunStore()
+        self.run_id: str | None = None
         self.steering = Steering()
         self.cancel_event = threading.Event()
         self.providers = [dict(p) for p in config.active_providers()]
@@ -174,6 +178,12 @@ class Orchestrator(QThread):
         self._decision_value = {"action": "reject"}
         self._decision.set()
 
+    # ---- checkpointing ----------------------------------------------
+    def _ck(self, state: RunState) -> None:
+        if self.run_id:
+            self.store.set_state(self.run_id, state)
+            self.store.add_event(self.run_id, "state", state.value)
+
     # ---- helpers ----------------------------------------------------
     def _emit_agent(self, pid: str):
         return lambda kind, payload: self.agent_event.emit(pid, kind, payload)
@@ -202,11 +212,15 @@ class Orchestrator(QThread):
         try:
             self._run_inner()
         except WorkspaceError as exc:
-            self.run_error.emit(f"Ошибка рабочей области: {exc}")
-            self._safe_cleanup()
+            self._fail(f"Ошибка рабочей области: {exc}")
         except Exception as exc:
-            self.run_error.emit(f"Сбой оркестратора: {exc}")
-            self._safe_cleanup()
+            self._fail(f"Сбой оркестратора: {exc}")
+
+    def _fail(self, message: str) -> None:
+        if self.run_id:
+            self.store.finish(self.run_id, RunState.FAILED, message)
+        self.run_error.emit(message)
+        self._safe_cleanup()
 
     def _run_inner(self) -> None:
         root = self.project.get("local_path", "")
@@ -230,6 +244,12 @@ class Orchestrator(QThread):
                 "убери их — Dispatcher не трогает и не коммитит чужие правки.")
             return
 
+        # Persist the run now that it's actually going to execute.
+        self.run_id = self.store.create_run(
+            self.project.get("id", ""), self.instruction, info["base_commit"])
+        self.store.set_workspace(self.run_id, str(self.rw.run_dir),
+                                 self.rw.integration_branch)
+
         context = build_context(root)
         implementers, reviewer = self._select_team()
         self.log.emit(
@@ -237,15 +257,20 @@ class Orchestrator(QThread):
             f"исполнители: {', '.join(p['short'] for p in implementers)}"
             + (f" · ревьюер: {reviewer['short']}" if reviewer else ""))
 
+        self._ck(RunState.PLANNING)
         assignments = self._plan(context, implementers)
         if self.cancel_event.is_set():
-            return self._finish({"status": "cancelled", "message": "Остановлено."})
+            return self._finish({"status": "cancelled", "message": "Остановлено."},
+                                RunState.CANCELLED)
 
+        self._ck(RunState.EXECUTING)
         summaries = self._execute(implementers, assignments, context)
         if self.cancel_event.is_set():
-            return self._finish({"status": "cancelled", "message": "Остановлено."})
+            return self._finish({"status": "cancelled", "message": "Остановлено."},
+                                RunState.CANCELLED)
 
         # Integration
+        self._ck(RunState.INTEGRATING)
         conflicts = self._integrate(implementers)
         integ = {
             "changed_files": self.rw.integration_changed_files(),
@@ -258,6 +283,7 @@ class Orchestrator(QThread):
         review_notes = self._review(reviewer, integ["diff"]) if reviewer else ""
 
         # Verification
+        self._ck(RunState.VERIFYING)
         verification = self._verify(root)
         self._verification = verification.to_dict()
         self.verification_ready.emit(self._verification)
@@ -265,8 +291,16 @@ class Orchestrator(QThread):
         # Report (stored as an artifact OUTSIDE the target repo)
         report = self._compose_report(summaries, review_notes, integ, verification)
         self._report = report
-        self.report_ready.emit(report, self._usage_summary())
+        usage = self._usage_summary()
+        self.report_ready.emit(report, usage)
         self._save_report_artifact(report)
+        self._persist_usage()
+
+        # Checkpoint the review so this run is resumable after a restart.
+        if self.run_id:
+            self.store.save_review(self.run_id, integ["diff"], self._verification,
+                                   report, integ["changed_files"])
+        self._ck(RunState.AWAITING_APPROVAL)
 
         can_autopublish = not (
             self.orch.get("require_verification", True)
@@ -285,7 +319,8 @@ class Orchestrator(QThread):
             self.rw.cleanup()          # discard all worktrees + temp branches
             return self._finish({
                 "status": "cancelled",
-                "message": "Публикация отклонена. Исходный репозиторий не тронут."})
+                "message": "Публикация отклонена. Исходный репозиторий не тронут."},
+                RunState.CANCELLED)
         self._publish(push=self._decision_value.get("push", False),
                       blocked=not can_autopublish)
 
@@ -511,6 +546,16 @@ class Orchestrator(QThread):
                 "total_cost": total_cost, "input_tokens": total_in,
                 "output_tokens": total_out}
 
+    def _persist_usage(self) -> None:
+        if not self.run_id:
+            return
+        for pid, usage in self._usage.items():
+            p = self._cfg(pid)
+            cost = usage.input_tokens / 1e6 * p.get("price_in", 0) \
+                + usage.output_tokens / 1e6 * p.get("price_out", 0)
+            self.store.add_usage(self.run_id, pid, usage.input_tokens,
+                                 usage.output_tokens, cost)
+
     def _save_report_artifact(self, report: str) -> None:
         try:
             from .config import CONFIG_DIR
@@ -525,6 +570,7 @@ class Orchestrator(QThread):
 
     # ---- publish ----------------------------------------------------
     def _publish(self, push: bool, blocked: bool) -> None:
+        self._ck(RunState.PUBLISHING)
         result = {"status": "done", "branch": self.rw.integration_branch,
                   "commit": None, "pushed": False, "message": ""}
         try:
@@ -536,7 +582,7 @@ class Orchestrator(QThread):
             if commit is None:
                 result["message"] = "Изменений для коммита нет."
                 self.rw.cleanup()
-                return self._finish(result)
+                return self._finish(result, RunState.COMPLETED)
             self._published_branch = self.rw.integration_branch
             self.log.emit(f"Коммит {commit} в ветку {self.rw.integration_branch}")
             if push and blocked:
@@ -558,9 +604,12 @@ class Orchestrator(QThread):
             result["message"] = f"Работа выполнена, но git-операция не удалась: {exc}"
         # keep the integration branch (published), drop agent temp branches + worktrees
         self.rw.cleanup(keep=[self.rw.integration_branch])
-        self._finish(result)
+        state = RunState.PARTIAL if result["status"] == "partial" else RunState.COMPLETED
+        self._finish(result, state)
 
-    def _finish(self, result: dict) -> None:
+    def _finish(self, result: dict, state: RunState | None = None) -> None:
+        if self.run_id and state is not None:
+            self.store.finish(self.run_id, state, result.get("message", ""))
         self.run_finished.emit(result)
 
     def _safe_cleanup(self) -> None:

@@ -12,7 +12,9 @@ from PySide6.QtWidgets import (
 from .. import git_service
 from ..config import Config
 from ..orchestrator import Orchestrator
+from ..persistence import RunStore
 from ..providers import make_adapter
+from ..resume import discard_resumed, publish_resumed
 from .agent_panel import AgentPanel
 from .approval_dialog import ApprovalDialog
 from .chat_view import ChatView
@@ -48,6 +50,7 @@ class MainWindow(QMainWindow):
         self.live_usage: dict[str, dict] = {}
         self._limits_checker: LimitsChecker | None = None
         self._last_diff: str = ""
+        self.run_store = RunStore()
 
         self.setWindowTitle("Multi-AI Control Center — Claude · ChatGPT · Grok")
         self.resize(1360, 860)
@@ -64,6 +67,7 @@ class MainWindow(QMainWindow):
         self._refresh_projects()
         # No automatic paid ping on startup (see SECURITY.md / brief §8).
         # Rate-limit badges fill from real responses during a run, or on demand.
+        self._recover_runs()
 
     # ================= sidebar =================
     def _build_sidebar(self) -> QWidget:
@@ -438,7 +442,8 @@ class MainWindow(QMainWindow):
         self.live_usage.clear()
         self.usage_label.setText("")
 
-        self.orchestrator = Orchestrator(self.config, project, instruction)
+        self.orchestrator = Orchestrator(self.config, project, instruction,
+                                         store=self.run_store)
         self.running_project_id = project["id"]
         orc = self.orchestrator
         orc.plan_ready.connect(self._on_plan_ready)
@@ -603,10 +608,47 @@ class MainWindow(QMainWindow):
             panel.set_run_active(False)
             panel.set_live(False)
 
+    def _recover_runs(self) -> None:
+        """After a restart, resolve runs left at the approval gate."""
+        try:
+            recon = self.run_store.reconcile_on_startup()
+        except Exception:
+            return
+        for run_id in recon.get("resumable", []):
+            record = self.run_store.get(run_id)
+            if record is None:
+                continue
+            project = self.config.get_project(record.project_id)
+            if not project or not project.get("local_path"):
+                continue
+            status = record.verification.get("status", "unknown")
+            payload = {
+                "status": status,
+                "can_autopublish": status not in ("fail", "unknown", "cancelled"),
+                "changed_files": record.changed_files,
+                "conflicts": [],
+                "verification": record.verification,
+            }
+            self.statusBar().showMessage(
+                f"Незавершённый прогон для «{project['name']}» — требуется решение")
+            dlg = ApprovalDialog(payload, record.diff, parent=self)
+            dlg.setWindowTitle("Восстановление прогона — одобрение")
+            dlg.exec()
+            action, push = dlg.decision
+            if action == "approve":
+                res = publish_resumed(self.run_store, record, project, push)
+            else:
+                res = discard_resumed(self.run_store, record, project)
+            self._on_log(res.get("message", ""))
+
     def closeEvent(self, event) -> None:
         if self.orchestrator:
             self.orchestrator.cancel()
             self.orchestrator.wait(3000)
         if self._limits_checker and self._limits_checker.isRunning():
             self._limits_checker.wait(2000)
+        try:
+            self.run_store.close()
+        except Exception:
+            pass
         super().closeEvent(event)

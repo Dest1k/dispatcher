@@ -84,6 +84,21 @@ class RunWorkspaces:
         self.integration_branch = f"dispatcher/{self.run_id}/integration"
         self._created_branches: list[str] = []
 
+    @classmethod
+    def reopen(cls, repo_root: str, run_id: str, run_dir: str, base_commit: str,
+               integration_branch: str) -> "RunWorkspaces":
+        """Reconstruct a run's integration workspace after a restart, so a run
+        parked at the approval gate can still be published or discarded."""
+        rw = cls(repo_root, run_id=run_id, runs_root=str(Path(run_dir).parent))
+        rw.run_dir = Path(run_dir)
+        rw.base_commit = base_commit
+        rw.integration_branch = integration_branch
+        integ = Path(run_dir) / "integration"
+        if integ.exists():
+            rw.integration_path = integ
+        rw._created_branches = [integration_branch]
+        return rw
+
     # ---- lifecycle --------------------------------------------------
     def prepare(self) -> dict:
         if not (Path(self.repo_root) / ".git").exists():

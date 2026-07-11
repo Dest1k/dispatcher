@@ -137,6 +137,14 @@ def test_full_run_source_untouched_until_approved(has_git, git_repo, tmp_path,
                           capture_output=True, text=True)
     assert "hello from agent" in show.stdout
 
+    # the run was persisted and reached a terminal COMPLETED state with usage
+    from app.persistence import RunStore
+    store = RunStore(tmp_path / "cfg" / "dispatcher.db")
+    runs = store.list_runs("p1")
+    assert runs and runs[0].state == "completed"
+    assert store.usage_for(runs[0].id)          # token usage recorded
+    store.close()
+
 
 def test_rejection_leaves_repo_pristine(has_git, git_repo, tmp_path, mocked_net,
                                         monkeypatch, qapp):
