@@ -127,12 +127,12 @@ def test_openai_conversion():
     assert conv[3]["role"] == "tool" and conv[3]["tool_call_id"] == "a1"
 
 
-# ---- git -------------------------------------------------------------
-def test_git_commit_and_diff(has_git, git_repo):
+# ---- git (read-only helpers; mutation is covered by test_workspace) --
+def test_git_readonly_helpers(has_git, git_repo):
+    assert git_service.has_repo(str(git_repo))
+    assert git_service.current_branch(str(git_repo)) in ("main", "master")
     (git_repo / "b.txt").write_text("more")
-    stat = git_service.diff_stat(str(git_repo))
-    assert "b.txt" in stat
-    assert "b.txt" in git_service.changed_files(str(git_repo))
+    assert "b.txt" in git_service.status(str(git_repo))
 
 
 # ---- config ----------------------------------------------------------

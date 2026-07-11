@@ -1,199 +1,132 @@
-# ⬢ Multi-AI Control Center
+# Dispatcher
 
-Графический центр управления тремя самыми умными ИИ планеты — **Claude Opus 4.8**,
-**ChatGPT 5.6** и **Grok 4.5** — работающими как единый консилиум над твоими
-проектами. Ты ставишь задачу в чат, она уходит сразу всем трём, они сами (или под
-руководством Claude) делят работу примерно поровну, параллельно правят код в
-репозитории, а на выходе — единый отчёт и коммит с пушем в GitHub.
+A desktop control plane (Python + PySide6) that coordinates AI coding agents
+over your repositories with **isolation, technically-enforced file ownership,
+sandboxed command execution, deterministic verification, and an explicit human
+approval gate** before anything is committed or pushed.
 
-Приложение на **Python + Qt (PySide6)**, десктопное, под Windows (а также Linux/macOS).
+Dispatcher can drive:
 
----
+- **direct provider APIs** (Anthropic Messages, OpenAI Chat Completions, and any
+  OpenAI-compatible endpoint);
+- **local OpenAI-compatible models** (e.g. vLLM) with no API billing;
+- one, two, or many agents — the provider/agent list is dynamic, not a fixed set.
 
-## Что умеет
+It is Windows-first and also runs on Linux and macOS.
 
-- **Три ИИ в самых «жирных» конфигурациях по умолчанию**
-  - Claude Opus 4.8 — effort **`max`** (Ultracode), адаптивное мышление;
-  - ChatGPT 5.6 — reasoning effort **`high`** (Sol Ultra);
-  - Grok 4.5 — reasoning effort **`high`** (Max preset).
-  - Модель, effort, base URL, лимит токенов и цену **каждого** ИИ можно менять в настройках.
-- **Мультипроектность.** Каждый проект — это явно указанная локальная папка **и**
-  GitHub-репозиторий с веткой. Проекты переключаются в сайдбаре.
-- **Оркестрация.** Режим «Ведущий» — Claude как самый разумный раздаёт роли и
-  непересекающиеся файлы; режим «Каждый сам» — все работают над общей задачей.
-- **Динамический консилиум.** Работает с 1, 2 или 3 ИИ. Любого участника можно
-  **отключить на ходу** (его работу тут же подхватывают остальные) или
-  **подключить на ходу** — прямо во время выполнения задачи.
-- **Инструкции на ходу.** Пока идёт работа, любое новое сообщение уходит всем
-  работающим моделям как дополнительная инструкция (не прерывая процесс).
-- **Живая активность.** По каждой модели видно, что она делает: мысли,
-  вызовы инструментов (чтение/запись файлов, команды), результаты.
-- **Отчёт + git.** По завершении Claude собирает единый Markdown-отчёт, он
-  сохраняется файлом в `ai-reports/`, коммитится и пушится в ветку проекта.
-- **Учёт токенов и стоимости** — вживую и в итоговом отчёте, по каждой модели.
-- **Остаток лимитов по каждой модели перед глазами** — на панели каждого ИИ
-  видно, сколько запросов и токенов осталось в текущем окне лимита, плюс кнопка
-  «↻ Обновить лимиты» и авто-проверка при старте.
-- **Markdown-чат** с историей по каждому проекту.
+> This project began as a three-model "control center" prototype. It has been
+> redesigned into a safety-first orchestration layer. The documentation below
+> describes what the code actually does today; see `ROADMAP.md` and
+> `IMPLEMENTATION_STATUS.md` for what is implemented vs planned.
 
 ---
 
-## Установка и запуск
+## Safety model (why this is not "three bots editing one folder")
 
-Нужен Python 3.10+ и git.
+| Concern | What Dispatcher does |
+|---|---|
+| Shared writable repo | Each agent works in its **own git worktree** created from a recorded base commit. Agents never share a writable tree. |
+| File ownership | A `PathPolicy` **technically enforces** each agent's allowed paths (deny/read-only globs, symlink & junction escape blocked). Out-of-scope writes return a structured tool error. |
+| Command execution | Commands run in a **sandbox**: the host environment is *not* inherited (so provider keys/tokens are absent), a throwaway HOME, process-group termination, hard timeout, output redaction. Backends: restricted (default), Docker (one container per command, no socket, `--network none`, resource caps), or an opt-in, clearly-flagged unsafe-local mode. |
+| Git safety | The source working tree is never modified. Runs are blocked if it is dirty. Accepted work is applied as reviewed patches into an **integration branch** with explicit staging — no `git add -A` on your repo, no branch reset, no force-push. `auto_push` defaults to **off**. |
+| Verification | A real **verification stage** (detected or configured commands) runs before publication. `fail`/`unknown`/`cancelled` **blocks** automatic publication. |
+| Human approval | You see the **full diff + verification evidence** and approve/reject. Publishing pushes only the integration branch — never directly into your target branch. |
+| Recoverability | After any cancelled or failed run, the original repository is untouched and fully recoverable. |
+| Secrets | API keys and tokens live in the **OS secret store** (keyring); only references are written to config. Logs/reports/UI are redacted. |
+
+---
+
+## Providers and billing
+
+Each agent shows its provider, model, **transport**, **auth**, and **billing
+source** so they are never conflated:
+
+- **Direct API** — billed per-token by the provider (Anthropic, OpenAI, xAI).
+- **Subscription** — e.g. **Grok on SuperGrok**. The programmatic call still uses
+  an xAI API key, but the account is on a subscription pool; Dispatcher labels it
+  `Grok · SuperGrok` and marks its quota **"not exposed by provider"** rather than
+  inventing a number.
+- **Local** — an OpenAI-compatible endpoint such as vLLM: no API billing.
+
+**Rate limits, subscription quotas, and financial budgets are shown as separate
+concepts** — a rate-limit header is never labeled as "remaining subscription
+allowance". Rate-limit windows are read from real responses; a manual refresh is
+available and is clearly marked as a billable request (no automatic paid pings).
+
+Official **subscription-backed coding agents** (Codex / Claude Agent SDK / xAI
+build agents) are represented behind a capability-gated transport boundary and
+are currently **marked unavailable** — Dispatcher does not scrape cookies,
+automate consumer web apps, or emulate unsupported auth. See `PROVIDERS.md`.
+
+---
+
+## Install & run
+
+Requires Python 3.10+ and git.
 
 ```bash
-pip install -r requirements.txt
+pip install -e .            # or: pip install -r requirements.txt
+pip install keyring        # recommended: store secrets in the OS keychain
 python run.py
 ```
 
-На Linux для Qt могут понадобиться системные библиотеки:
-`sudo apt install libegl1 libgl1 libxkbcommon0 libdbus-1-3`.
+On Linux, Qt may need: `sudo apt install libegl1 libgl1 libxkbcommon0 libdbus-1-3`.
+For the Docker sandbox backend, Docker Desktop / WSL2 is required (otherwise
+Dispatcher falls back to the restricted local sandbox and says so).
 
-### Про ключи и подписки
+### First run
 
-Тебе нужны **API-ключи** каждого провайдера (не подписки). Подписки — ChatGPT
-Plus, Claude Pro, X Premium — дают доступ только вручную через сайт/приложение;
-программа через них ходить не может. Автоматический вызов моделей с самым
-сильным пресетом рассуждений идёт **только через API-ключ** (оплата отдельно,
-pay-as-you-go). Максимальные пресеты — это и есть «все плюшки», и они уже
-выставлены по умолчанию.
-
-**Про остаток лимита:** денежный баланс счёта провайдеры через API не отдают
-(у OpenAI/xAI такого эндпоинта нет). Зато каждый ответ несёт заголовки лимитов —
-сколько запросов и токенов у ключа осталось в текущем окне. Именно это
-показывается на панели каждой модели как «остаток перед глазами».
-
-### Первый запуск
-
-1. Открой **⚙ Настройки моделей** и вставь API-ключи для нужных ИИ
-   (можно один, два или все три). Кнопкой «Проверить подключение» убедись, что ключ рабочий.
-   При необходимости поправь `Модель` и `Effort` — по умолчанию стоят самые заряженные пресеты.
-2. Нажми **＋ Новый проект**: укажи название, локальную папку и GitHub-репозиторий
-   (`owner/repo` или полный URL), ветку для пуша и, при желании, GitHub-токен для
-   пуша по HTTPS. Кнопка «Клонировать» скачает репозиторий в папку, если её ещё нет.
-3. Напиши задачу в поле снизу и нажми **Отправить трём ИИ →** (или Ctrl+Enter).
+1. **⚙ Settings** → add an API key for each provider you want (one is enough).
+   Adjust model/effort as needed; defaults are factual, not "maxed" presets.
+2. **＋ New project** → point at a local git repo and (optionally) its GitHub
+   remote and branch. Optionally set per-project verification commands.
+3. Type a task, send it, watch each agent work in its isolated worktree, then
+   review the diff + verification and **approve or reject**.
 
 ---
 
-## Как это работает
+## Windows / Docker / WSL2
 
-```
-Твоя задача
-   │
-   ▼
-[Планирование]  Claude (ведущий) делит работу ~поровну, назначает роли и файлы
-   │
-   ▼
-[Параллельная работа]  ○ Claude   ○ ChatGPT   ○ Grok
-   каждый агент читает/пишет файлы репозитория своими инструментами
-   ├─ отключил модель? → её задачу подхватывают остальные
-   ├─ подключил модель? → она включается в текущую работу
-   └─ дослал инструкцию? → уходит всем работающим моделям
-   │
-   ▼
-[Отчёт]  Claude собирает единый Markdown-отчёт → ai-reports/report-*.md
-   │
-   ▼
-[Git]  add → commit → push в ветку проекта
-```
-
-Инструменты, доступные каждому ИИ внутри репозитория: `list_dir`, `read_file`,
-`write_file`, `edit_file`, `delete_path`, `run_command` (shell), `finish`.
-Все операции ограничены папкой проекта.
+- Windows is a first-class target; packaging via PyInstaller (`build.spec`).
+- The Docker sandbox mounts only the agent worktree, no home, no docker socket,
+  `--network none` by default, with CPU/memory/pids limits.
+- WSL2 is a supported host for Docker Desktop.
+- The restricted local sandbox does not hard-block network without a Linux
+  network namespace; use the Docker backend for strict network isolation. See
+  `SECURITY.md`.
 
 ---
 
-## Управление во время работы
+## Tests
 
-- **Панель каждой модели** снизу показывает её активность в реальном времени и
-  содержит кнопку-тумблер:
-  - идёт работа, модель активна → **⏻ Отключить** (её часть подхватят остальные);
-  - идёт работа, модель не в деле → **＋ Подключить** (включится в текущую задачу);
-  - вне работы → **✓ В команде / ＋ В команду** (участие в следующем запуске).
-- **⏹ Стоп** — остановить весь консилиум.
-- Поле ввода во время работы шлёт **дополнительные инструкции** всем моделям.
-
----
-
-## Сборка .exe под Windows
+No test requires a paid API — providers are mocked.
 
 ```bash
-pip install pyinstaller
-pyinstaller build.spec
+pip install pytest
+python -m pytest -q
 ```
 
-Готовый бинарь: `dist/MultiAIControlCenter/MultiAIControlCenter.exe`.
-Собирать нужно **на Windows** (PyInstaller не кросс-компилирует).
+Coverage includes security (redaction, path policy, secret store), git
+workspace isolation & safe integration, sandbox env-scrubbing/timeout/cancel,
+verification status, provider/billing model, UI construction, and an
+end-to-end orchestrator run proving the source tree is untouched until approval.
 
 ---
 
-## Хранение ключей и безопасность
+## Documentation
 
-По твоему выбору ключи хранятся **обычным JSON без шифрования** в
-`~/.multi_ai_control_center/config.json` (в профиле пользователя). Файл читается
-только под твоей учётной записью ОС. Никакой системы разрешений внутри приложения
-нет — задача отправляется и выполняется без подтверждений. `config.json` добавлен
-в `.gitignore`, чтобы ключи случайно не попали в репозиторий.
+- `ARCHITECTURE.md` — layers, run flow, modules.
+- `SECURITY.md` — threat model, sandbox model, what is enforced vs best-effort.
+- `PROVIDERS.md` — transports, billing sources, local vLLM, subscription agents.
+- `MIGRATION.md` — config migration and secret migration behavior.
+- `DEVELOPMENT.md` — setup, tests, packaging, code structure.
+- `ROADMAP.md` / `IMPLEMENTATION_STATUS.md` — phases and current status.
 
-> Замечание: пуш в GitHub использует твою настроенную git-авторизацию
-> (credential helper/SSH) либо, если указан, GitHub-токен проекта (`https` с
-> `x-access-token`). Прямой коммит и пуш идут в рабочую ветку проекта.
+## Known limitations (see ROADMAP.md)
 
----
-
-## Что я добавил сверх задания (и почему)
-
-Ты просил подумать, чего не хватает. Помимо основного, реализовано:
-
-1. **Учёт токенов и стоимости** по каждой модели — вживую и в отчёте. Три топовые
-   модели на максимальном effort стоят денег; без этого легко улететь по бюджету.
-2. **Отчёт как артефакт репозитория** — каждый прогон пишет `ai-reports/report-*.md`,
-   который коммитится и пушится вместе с работой. Отчёт становится частью деливери,
-   а не только сообщением в чате.
-3. **План распределения ролей виден в чате** — до начала работы видно, кто за что
-   отвечает и какие файлы за кем закреплены (уменьшает конфликты правок).
-4. **Назначение непересекающихся файлов** ведущей моделью — три ИИ, редактирующие
-   одни и те же файлы одновременно, устроили бы хаос; Claude разводит зоны ответственности.
-5. **Проверка подключения** для каждого ключа — сразу видно, рабочий ли ключ и модель.
-6. **Полное управление моделью и effort для ChatGPT и Grok** (а не только Claude),
-   плюс редактируемые цены и base URL — модели свежие, ID можно поправить, если поменяются.
-7. **Устойчивость к обрыву модели** — если ключ отвалился/ошибка, остальные
-   продолжают, работа доводится до конца, а не падает целиком.
-8. **История чата по проекту** и понятные статусы (готово/ошибка/остановлено/пуш).
-9. **Клонирование и git-статус** прямо из интерфейса — репозиторий явно связан с проектом.
-10. **Точная передача контекста между шагами** (сохранение «сырых» ответов моделей,
-    включая блоки мышления Claude) — чтобы многошаговые вызовы инструментов не ломались.
-
----
-
-## Структура кода
-
-```
-run.py                    точка входа
-app/
-  config.py               конфиг и проекты (JSON), пресеты по умолчанию
-  orchestrator.py         движок: план → параллельные агенты → отчёт → git (QThread)
-  tools.py                инструменты работы с файлами/командами (в песочнице проекта)
-  git_service.py          обёртка над git
-  providers/
-    base.py               нейтральные типы + агентный цикл с инструментами и steering
-    anthropic.py          адаптер Claude (Messages API)
-    openai_compat.py      адаптер ChatGPT и Grok (Chat Completions)
-  ui/
-    main_window.py        главное окно
-    chat_view.py          markdown-чат
-    agent_panel.py        живая панель модели + тумблер участия
-    settings_dialog.py    настройки моделей и оркестрации
-    project_dialog.py     создание/редактирование проекта
-    style.py              тёмная тема
-```
-
----
-
-## О биндинге Qt
-
-Использован **PySide6** — официальный Qt для Python (совместим по API с PyQt,
-но проще ставится и лицензионно свободнее, LGPL). Если тебе принципиально нужен
-именно PyQt6, код переносится почти без изменений (отличаются несколько имён
-сигналов/энумов).
+- Persistent, restart-resumable runs (SQLite) are **not yet** implemented; a run
+  lives for the app session.
+- Multi-round "council" (proposal → critique → …) beyond the isolation +
+  integration + review primitives is planned.
+- Docker container-per-agent for the *implementation* step (not just commands)
+  and official subscription-agent transports require further work / credentials.
