@@ -30,14 +30,23 @@ class SecretStore:
         try:
             import keyring  # type: ignore
             # Reject the "fail" / "null" backends that raise or silently drop.
+            # The fail backend's class is `keyring.backends.fail.Keyring`, so the
+            # class name alone ("Keyring") is not enough — inspect the module too.
             backend = keyring.get_keyring()
-            name = backend.__class__.__name__.lower()
-            if "fail" not in name and "null" not in name:
+            cls = backend.__class__
+            qualified = f"{cls.__module__}.{cls.__name__}".lower()
+            if not any(bad in qualified for bad in ("fail", "null")):
                 self._keyring = keyring
                 self._secure = True
         except Exception:
             self._keyring = None
         self._fallback_override: Path | None = None
+
+    def _downgrade_to_file(self) -> None:
+        """A keyring backend that passed the probe but fails at runtime forces a
+        graceful downgrade to the insecure file store (criterion §21 fallback)."""
+        self._keyring = None
+        self._secure = False
 
     def _fb_path(self) -> Path:
         # Resolved lazily so a test that redirects CONFIG_DIR is honored.
@@ -75,8 +84,14 @@ class SecretStore:
     def set(self, account: str, value: str) -> str:
         """Store a secret and return a reference string."""
         if self._secure and self._keyring is not None:
-            self._keyring.set_password(SERVICE, account, value)
-            return f"keyring:{account}"
+            try:
+                self._keyring.set_password(SERVICE, account, value)
+                return f"keyring:{account}"
+            except Exception:
+                # Backend passed the probe but fails on write (e.g. no Secret
+                # Service running). Degrade to the file store instead of
+                # crashing config.save().
+                self._downgrade_to_file()
         data = self._load_fallback()
         data[account] = value
         self._save_fallback(data)

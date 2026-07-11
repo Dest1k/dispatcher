@@ -89,3 +89,37 @@ def test_secret_store_roundtrip(tmp_path):
 def test_secret_store_is_secure_flag():
     # The real store reports whether an OS keychain backend is active.
     assert isinstance(secret_store.is_secure(), bool)
+
+
+def test_secret_store_rejects_fail_backend(monkeypatch):
+    # The "fail" backend's class is keyring.backends.fail.Keyring — its class
+    # name is just "Keyring", so detection must inspect the module too.
+    keyring = pytest.importorskip("keyring")
+    from keyring.backends import fail
+    monkeypatch.setattr(keyring, "get_keyring", lambda: fail.Keyring())
+    store = SecretStore()
+    assert store.is_secure() is False
+
+
+def test_secret_store_downgrades_when_keyring_write_fails(tmp_path):
+    # A backend that passes the probe but raises on write must degrade to the
+    # file store, never crash config.save() (criterion §21 fallback).
+    class FailingKeyring:
+        def set_password(self, *a):
+            raise RuntimeError("no Secret Service")
+
+        def get_password(self, *a):
+            raise RuntimeError("no Secret Service")
+
+        def delete_password(self, *a):
+            raise RuntimeError("no Secret Service")
+
+    store = SecretStore()
+    store._secure = True
+    store._keyring = FailingKeyring()
+    store._fallback_override = tmp_path / "secrets.json"
+
+    ref = store.set("provider:test:api_key", "sk-secret-value")
+    assert ref.startswith("file:")
+    assert store.is_secure() is False
+    assert store.get(ref) == "sk-secret-value"
