@@ -5,10 +5,43 @@ import re
 
 from PySide6.QtWidgets import (
     QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
 from .. import git_service
+
+
+def parse_verify_commands(text: str) -> list[dict]:
+    """Parse the verify-commands editor into [{name, command}, ...].
+
+    One command per line. Blank lines and lines starting with '#' are ignored.
+    An optional label may be given with 'label :: command'; otherwise the
+    command itself is used as the label.
+    """
+    commands: list[dict] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "::" in line:
+            name, _, command = line.partition("::")
+            name, command = name.strip(), command.strip()
+        else:
+            name, command = line, line
+        if command:
+            commands.append({"name": name or command, "command": command})
+    return commands
+
+
+def format_verify_commands(commands: list[dict]) -> str:
+    lines = []
+    for c in commands or []:
+        name, command = c.get("name", ""), c.get("command", "")
+        if name and name != command:
+            lines.append(f"{name} :: {command}")
+        else:
+            lines.append(command)
+    return "\n".join(lines)
 
 
 def _parse_github(url_or_repo: str) -> tuple[str, str]:
@@ -64,6 +97,16 @@ class ProjectDialog(QDialog):
         self.token.setEchoMode(QLineEdit.Password)
         self.token.setPlaceholderText("GitHub token (для пуша по HTTPS; можно оставить пустым, если настроен git)")
         form.addRow("GitHub token", self.token)
+
+        self.verify = QPlainTextEdit(
+            format_verify_commands(project.get("verify_commands")) if project else "")
+        self.verify.setPlaceholderText(
+            "Команды верификации, по одной на строку. Пусто = автоопределение.\n"
+            "Пример:\n"
+            "тесты :: python -m pytest -q\n"
+            "линт :: ruff check .")
+        self.verify.setFixedHeight(96)
+        form.addRow("Проверки перед публикацией", self.verify)
 
         root.addLayout(form)
 
@@ -124,6 +167,7 @@ class ProjectDialog(QDialog):
             "github_url": url,
             "branch": self.branch.text().strip() or "main",
             "github_token": self.token.text().strip(),
+            "verify_commands": parse_verify_commands(self.verify.toPlainText()),
         }
         if self.project:
             self.config.update_project(self.project["id"], **data)
@@ -131,5 +175,7 @@ class ProjectDialog(QDialog):
         else:
             created = self.config.add_project(
                 name, local, slug, url, data["branch"], data["github_token"])
+            self.config.update_project(created["id"],
+                                       verify_commands=data["verify_commands"])
             self.saved_id = created["id"]
         self.accept()
