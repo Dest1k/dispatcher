@@ -56,6 +56,7 @@ class CompletionResult:
     usage: Usage
     raw_assistant: Any
     stop_reason: str
+    limits: dict | None = None      # rate-limit window remaining, from headers
 
 
 class Steering:
@@ -134,6 +135,8 @@ def run_agent(
         total_usage.add(result.usage)
         on_event("usage", json.dumps(
             {"in": result.usage.input_tokens, "out": result.usage.output_tokens}))
+        if result.limits:
+            on_event("limits", json.dumps(result.limits))
 
         if result.thinking:
             on_event("thinking", result.thinking)

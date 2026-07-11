@@ -87,6 +87,7 @@ class AnthropicAdapter(BaseAdapter):
         resp = requests.post(self._url(), json=body, headers=headers, timeout=TIMEOUT)
         if resp.status_code != 200:
             raise RuntimeError(f"Anthropic {resp.status_code}: {resp.text[:400]}")
+        limits = _limits_from_headers(resp.headers)
         data = resp.json()
 
         content = data.get("content", [])
@@ -116,13 +117,13 @@ class AnthropicAdapter(BaseAdapter):
             ),
             raw_assistant=content,
             stop_reason=data.get("stop_reason", ""),
+            limits=limits,
         )
 
-    def ping(self) -> str:
-        """Cheap request used by the connection test."""
+    def _ping_headers(self):
         body = {
             "model": self.cfg["model"],
-            "max_tokens": 16,
+            "max_tokens": 1,
             "messages": [{"role": "user", "content": "ping"}],
         }
         headers = {
@@ -133,4 +134,35 @@ class AnthropicAdapter(BaseAdapter):
         resp = requests.post(self._url(), json=body, headers=headers, timeout=60)
         if resp.status_code != 200:
             raise RuntimeError(f"{resp.status_code}: {resp.text[:200]}")
+        return resp.headers
+
+    def ping(self) -> str:
+        """Cheap request used by the connection test."""
+        self._ping_headers()
         return "ok"
+
+    def fetch_limits(self) -> dict:
+        """Return remaining rate-limit window for this key/model."""
+        return _limits_from_headers(self._ping_headers())
+
+
+def _limits_from_headers(headers) -> dict:
+    def as_int(name):
+        val = headers.get(name)
+        if val is None:
+            return None
+        try:
+            return int(float(val))
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "req_remaining": as_int("anthropic-ratelimit-requests-remaining"),
+        "req_limit": as_int("anthropic-ratelimit-requests-limit"),
+        "tok_remaining": (as_int("anthropic-ratelimit-tokens-remaining")
+                          or as_int("anthropic-ratelimit-input-tokens-remaining")),
+        "tok_limit": (as_int("anthropic-ratelimit-tokens-limit")
+                      or as_int("anthropic-ratelimit-input-tokens-limit")),
+        "reset": (headers.get("anthropic-ratelimit-tokens-reset")
+                  or headers.get("anthropic-ratelimit-requests-reset")),
+    }

@@ -1,7 +1,7 @@
 """Main application window."""
 from __future__ import annotations
 
-from PySide6.QtCore import QUrl, Qt
+from PySide6.QtCore import QThread, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
@@ -12,10 +12,29 @@ from PySide6.QtWidgets import (
 from .. import git_service
 from ..config import Config
 from ..orchestrator import Orchestrator
+from ..providers import make_adapter
 from .agent_panel import AgentPanel
 from .chat_view import ChatView
 from .project_dialog import ProjectDialog
 from .settings_dialog import SettingsDialog
+
+
+class LimitsChecker(QThread):
+    """Fetches remaining rate-limit windows for each provider off the UI thread."""
+    result = Signal(str, dict)
+    failed = Signal(str, str)
+
+    def __init__(self, providers: list[dict]):
+        super().__init__()
+        self.providers = providers
+
+    def run(self) -> None:
+        for provider in self.providers:
+            try:
+                limits = make_adapter(provider).fetch_limits()
+                self.result.emit(provider["id"], limits)
+            except Exception as exc:
+                self.failed.emit(provider["id"], str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -26,6 +45,7 @@ class MainWindow(QMainWindow):
         self.running_project_id: str | None = None
         self.agent_panels: dict[str, AgentPanel] = {}
         self.live_usage: dict[str, dict] = {}
+        self._limits_checker: LimitsChecker | None = None
 
         self.setWindowTitle("Multi-AI Control Center — Claude · ChatGPT · Grok")
         self.resize(1360, 860)
@@ -40,6 +60,7 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage("Готов")
         self._refresh_projects()
+        self._check_limits()   # populate the per-model limit badges on startup
 
     # ================= sidebar =================
     def _build_sidebar(self) -> QWidget:
@@ -140,6 +161,10 @@ class MainWindow(QMainWindow):
         self.usage_label = QLabel("")
         self.usage_label.setObjectName("Meta")
         top.addWidget(self.usage_label)
+        self.limits_btn = QPushButton("↻ Обновить лимиты")
+        self.limits_btn.setObjectName("Ghost")
+        self.limits_btn.clicked.connect(self._check_limits)
+        top.addWidget(self.limits_btn)
         v.addLayout(top)
 
         self.panels_row = QHBoxLayout()
@@ -287,6 +312,7 @@ class MainWindow(QMainWindow):
             self.mode_combo.setCurrentIndex(
                 0 if self.config.orchestration.get("mode") == "lead" else 1)
             self._rebuild_agent_panels()
+            self._check_limits()
             self.statusBar().showMessage("Настройки сохранены")
 
     def _on_mode_changed(self) -> None:
@@ -313,6 +339,34 @@ class MainWindow(QMainWindow):
             panel.toggle_requested.connect(self._on_panel_toggle)
             self.agent_panels[provider["id"]] = panel
             self.panels_row.addWidget(panel)
+
+    def _check_limits(self) -> None:
+        if self._limits_checker is not None and self._limits_checker.isRunning():
+            return
+        providers = self.config.available_providers()
+        if not providers:
+            return
+        for p in providers:
+            panel = self.agent_panels.get(p["id"])
+            if panel:
+                panel.set_limits_error("проверяю…")
+        self.limits_btn.setEnabled(False)
+        checker = LimitsChecker([dict(p) for p in providers])
+        checker.result.connect(self._on_limits_result)
+        checker.failed.connect(self._on_limits_failed)
+        checker.finished.connect(lambda: self.limits_btn.setEnabled(True))
+        self._limits_checker = checker
+        checker.start()
+
+    def _on_limits_result(self, provider_id: str, limits: dict) -> None:
+        panel = self.agent_panels.get(provider_id)
+        if panel:
+            panel.set_limits(limits)
+
+    def _on_limits_failed(self, provider_id: str, message: str) -> None:
+        panel = self.agent_panels.get(provider_id)
+        if panel:
+            panel.set_limits_error(message)
 
     def _on_panel_toggle(self, provider_id: str) -> None:
         panel = self.agent_panels.get(provider_id)
@@ -439,6 +493,12 @@ class MainWindow(QMainWindow):
                     "готово", "ошибка", "отключён", "отключён пользователем",
                     "остановлено"):
                 panel.set_live(False)
+            if kind == "limits":
+                import json
+                try:
+                    panel.set_limits(json.loads(payload))
+                except json.JSONDecodeError:
+                    pass
         if kind == "usage":
             import json
             try:
@@ -457,10 +517,14 @@ class MainWindow(QMainWindow):
             provider = self.config.providers.get(pid, {})
             total_in += u["in"]
             total_out += u["out"]
-            cost += u["in"] / 1e6 * provider.get("price_in", 0) \
+            pcost = u["in"] / 1e6 * provider.get("price_in", 0) \
                 + u["out"] / 1e6 * provider.get("price_out", 0)
+            cost += pcost
+            panel = self.agent_panels.get(pid)
+            if panel:
+                panel.set_spent(f"сессия: {u['in']}→{u['out']} тк · ${pcost:.4f}")
         self.usage_label.setText(
-            f"токены: {total_in} → {total_out}   ·   ~${cost:.4f}")
+            f"всего за сессию: {total_in} → {total_out} тк   ·   ~${cost:.4f}")
 
     def _on_log(self, message: str) -> None:
         self.statusBar().showMessage(message)
@@ -504,4 +568,6 @@ class MainWindow(QMainWindow):
         if self.orchestrator:
             self.orchestrator.cancel()
             self.orchestrator.wait(3000)
+        if self._limits_checker and self._limits_checker.isRunning():
+            self._limits_checker.wait(2000)
         super().closeEvent(event)

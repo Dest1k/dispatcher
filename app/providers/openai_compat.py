@@ -89,6 +89,7 @@ class OpenAIAdapter(BaseAdapter):
         if resp.status_code != 200:
             raise RuntimeError(
                 f"{self.cfg.get('short', 'OpenAI')} {resp.status_code}: {resp.text[:400]}")
+        limits = _limits_from_headers(resp.headers)
         data = resp.json()
 
         choice = (data.get("choices") or [{}])[0]
@@ -119,9 +120,10 @@ class OpenAIAdapter(BaseAdapter):
             ),
             raw_assistant=message,
             stop_reason=choice.get("finish_reason", ""),
+            limits=limits,
         )
 
-    def ping(self) -> str:
+    def _ping_headers(self):
         body = {
             "model": self.cfg["model"],
             "messages": [{"role": "user", "content": "ping"}],
@@ -137,4 +139,31 @@ class OpenAIAdapter(BaseAdapter):
         resp = requests.post(self._url(), json=body, headers=headers, timeout=60)
         if resp.status_code != 200:
             raise RuntimeError(f"{resp.status_code}: {resp.text[:200]}")
+        return resp.headers
+
+    def ping(self) -> str:
+        self._ping_headers()
         return "ok"
+
+    def fetch_limits(self) -> dict:
+        return _limits_from_headers(self._ping_headers())
+
+
+def _limits_from_headers(headers) -> dict:
+    def as_int(name):
+        val = headers.get(name)
+        if val is None:
+            return None
+        try:
+            return int(float(val))
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "req_remaining": as_int("x-ratelimit-remaining-requests"),
+        "req_limit": as_int("x-ratelimit-limit-requests"),
+        "tok_remaining": as_int("x-ratelimit-remaining-tokens"),
+        "tok_limit": as_int("x-ratelimit-limit-tokens"),
+        "reset": (headers.get("x-ratelimit-reset-tokens")
+                  or headers.get("x-ratelimit-reset-requests")),
+    }

@@ -47,9 +47,14 @@ class AgentPanel(QWidget):
         self.name_label.setObjectName("AgentName")
         self.role_label = QLabel("ожидание задачи")
         self.role_label.setObjectName("AgentRole")
+        self.meta_label = QLabel("лимит: —")
+        self.meta_label.setObjectName("AgentRole")
         title_box.addWidget(self.name_label)
         title_box.addWidget(self.role_label)
+        title_box.addWidget(self.meta_label)
         header.addLayout(title_box, 1)
+        self._limits_text = ""
+        self._spent_text = ""
 
         self.status_pill = QLabel("ожидание")
         self.status_pill.setObjectName("Pill")
@@ -99,9 +104,36 @@ class AgentPanel(QWidget):
         role = assignment.get("role") or ""
         self.role_label.setText(f"{title} · {role}"[:90])
 
+    def set_limits(self, limits: dict) -> None:
+        parts = []
+        if limits.get("tok_remaining") is not None:
+            tr = limits["tok_remaining"]
+            tl = limits.get("tok_limit")
+            parts.append(f"токены {_fmt(tr)}" + (f"/{_fmt(tl)}" if tl else "") + " ост.")
+        if limits.get("req_remaining") is not None:
+            rr = limits["req_remaining"]
+            rl = limits.get("req_limit")
+            parts.append(f"запросы {_fmt(rr)}" + (f"/{_fmt(rl)}" if rl else ""))
+        self._limits_text = "лимит: " + (" · ".join(parts) if parts else "—")
+        self._refresh_meta()
+
+    def set_limits_error(self, msg: str) -> None:
+        self._limits_text = f"лимит: не получен ({msg[:40]})"
+        self._refresh_meta()
+
+    def set_spent(self, text: str) -> None:
+        self._spent_text = text
+        self._refresh_meta()
+
+    def _refresh_meta(self) -> None:
+        pieces = [p for p in (self._limits_text, self._spent_text) if p]
+        self.meta_label.setText("   ·   ".join(pieces) or "лимит: —")
+
     def reset(self) -> None:
         self.log.clear()
         self.role_label.setText("ожидание задачи")
+        self._spent_text = ""
+        self._refresh_meta()
         self.set_status("ожидание")
 
     # ---- streaming events ------------------------------------------
@@ -141,6 +173,18 @@ class AgentPanel(QWidget):
     def _scroll_bottom(self) -> None:
         bar = self.log.verticalScrollBar()
         bar.setValue(bar.maximum())
+
+
+def _fmt(n) -> str:
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return str(n)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}k"
+    return str(n)
 
 
 def _esc(text: str) -> str:
