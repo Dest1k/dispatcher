@@ -217,7 +217,11 @@ class Orchestrator(QThread):
                 except Exception:
                     pass
             # Defense-in-depth: redact anything user-visible or persisted.
-            if kind in ("text", "error", "tool_result", "tool", "thinking", "steering"):
+            # "delta" (streamed text) is best-effort per-chunk — a secret split
+            # across chunks can't be caught here, but sandboxed commands have no
+            # secrets to begin with.
+            if kind in ("text", "error", "tool_result", "tool", "thinking",
+                        "steering", "delta"):
                 payload = redact(payload)
             if self.run_id and kind in ("tool", "status", "error"):
                 self.store.add_event(self.run_id, f"{pid}.{kind}", payload)

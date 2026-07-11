@@ -147,7 +147,10 @@ def run_agent(
         if result.thinking:
             on_event("thinking", result.thinking)
         if result.text:
-            on_event("text", result.text)
+            # When streaming, the text was already shown incrementally via
+            # "delta" events — re-emitting it as "text" would duplicate it.
+            if streamer is None:
+                on_event("text", result.text)
             final_text = result.text
 
         messages.append(Message(

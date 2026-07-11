@@ -66,6 +66,36 @@ def test_agent_loop_writes_and_finishes(tmp_path):
     assert usage.input_tokens == 200 and usage.output_tokens == 100
 
 
+class FakeStreamAdapter:
+    """Adapter exposing stream_complete: emits deltas then returns the text."""
+
+    def __init__(self, text):
+        self._text = text
+
+    def stream_complete(self, system, messages, tools, on_delta, cancel=None):
+        for ch in (self._text[:3], self._text[3:]):
+            if ch:
+                on_delta(ch)
+        return CompletionResult(text=self._text, thinking="", tool_calls=[],
+                                usage=Usage(1, 1), raw_assistant=None,
+                                stop_reason="end_turn")
+
+
+def test_streaming_does_not_duplicate_text(tmp_path):
+    events = []
+    final = run_agent(FakeStreamAdapter("Привет мир"), "sys",
+                      [Message("user", text="task")], TOOL_SPECS,
+                      lambda n, a: "", Steering(),
+                      lambda k, p: events.append((k, p)), 4,
+                      threading.Event(), Usage(), stream=True)
+    assert final == "Привет мир"
+    # text arrived only as incremental deltas, never re-emitted as a "text" block
+    kinds = [k for k, _ in events]
+    assert "delta" in kinds
+    assert "text" not in kinds
+    assert "".join(p for k, p in events if k == "delta") == "Привет мир"
+
+
 def test_steering_reaches_model(tmp_path):
     seen = {}
     steering = Steering()
