@@ -28,16 +28,18 @@ cross-review → integrate → verify → synthesize); adaptive escalation.
 
 ## Phase 4 — Providers & auth ◐
 Done: dynamic registry, transport/auth/billing model, direct-API + local
-(vLLM) adapters, capability-gated `subscription_agent` boundary (unavailable).
+(vLLM) adapters, capability-gated `subscription_agent` boundary (unavailable),
+transient retry/backoff (Retry-After), per-run budget enforcement + forecast.
 Planned: official subscription-agent adapters where supported; Responses-API
 adapters; streaming + provider-native cancellation; a versioned, source-dated
 model capability catalog; Docker container-per-agent for the implementation step.
 
 ## Phase 5 — UI & publication ◐
 Done: approval dialog with full diff + verification evidence; billing/limit
-labels; integration-branch publish. Planned: a run dashboard (task graph,
-artifacts, per-run budget), richer diff viewer, one-click draft PR (needs a
-GitHub token/App), resume controls.
+labels; integration-branch publish; one-click compare/PR URL; run history +
+event timeline; run recovery; safety knobs + budget in settings; secret-store
+status. Planned: a richer run dashboard (task graph, artifacts), richer diff
+viewer, API-based draft PR (needs a GitHub token/App).
 
 ## Phase 6 — Docs, packaging, hardening 🚧
 Done: README/ARCHITECTURE/SECURITY/PROVIDERS/MIGRATION/DEVELOPMENT/ROADMAP;

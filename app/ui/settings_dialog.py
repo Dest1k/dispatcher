@@ -130,6 +130,19 @@ class SettingsDialog(QDialog):
         title.setStyleSheet("font-size:16px; font-weight:700; color:#f0f6fc;")
         root.addWidget(title)
 
+        from ..security import secret_store
+        if secret_store.is_secure():
+            sec_text = f"🔒 Ключи хранятся в системном хранилище ({secret_store.backend_name()})"
+            sec_color = "#3fb950"
+        else:
+            sec_text = ("⚠ Системное хранилище недоступно — ключи в файле с правами 0600. "
+                        "Установи пакет keyring для хранения в ОС.")
+            sec_color = "#d29922"
+        sec_label = QLabel(sec_text)
+        sec_label.setWordWrap(True)
+        sec_label.setStyleSheet(f"color:{sec_color}; font-size:12px;")
+        root.addWidget(sec_label)
+
         self.tabs = QTabWidget()
         self.forms: dict[str, ProviderForm] = {}
         for pid in PROVIDER_ORDER:

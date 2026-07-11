@@ -34,6 +34,7 @@ from .domain import RunState
 from .persistence import RunStore
 from .providers import Steering, Usage, make_adapter, run_agent
 from .providers.base import Message
+from .security import redact
 from .sandbox import make_sandbox
 from .tools import TOOL_SPECS, ProjectTools
 from .verification import detect_commands, run_verification
@@ -215,6 +216,9 @@ class Orchestrator(QThread):
                                       "плавно останавливаю агентов")
                 except Exception:
                     pass
+            # Defense-in-depth: redact anything user-visible or persisted.
+            if kind in ("text", "error", "tool_result", "tool", "thinking", "steering"):
+                payload = redact(payload)
             if self.run_id and kind in ("tool", "status", "error"):
                 self.store.add_event(self.run_id, f"{pid}.{kind}", payload)
             self.agent_event.emit(pid, kind, payload)
@@ -327,8 +331,8 @@ class Orchestrator(QThread):
         self._verification = verification.to_dict()
         self.verification_ready.emit(self._verification)
 
-        # Report (stored as an artifact OUTSIDE the target repo)
-        report = self._compose_report(summaries, review_notes, integ, verification)
+        # Report (stored as an artifact OUTSIDE the target repo), redacted.
+        report = redact(self._compose_report(summaries, review_notes, integ, verification))
         self._report = report
         usage = self._usage_summary()
         self.report_ready.emit(report, usage)
