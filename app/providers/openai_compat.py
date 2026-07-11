@@ -54,26 +54,19 @@ class OpenAIAdapter(BaseAdapter):
                     out.append(msg)
         return out
 
-    def complete(self, system: str, messages: list[Message],
-                 tools: list[ToolSpec]) -> CompletionResult:
+    def _build_body(self, system, messages, tools) -> dict:
         body: dict = {
             "model": self.cfg["model"],
             "messages": self._to_messages(system, messages),
             "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    },
-                }
+                {"type": "function",
+                 "function": {"name": t.name, "description": t.description,
+                              "parameters": t.parameters}}
                 for t in tools
             ],
             "tool_choice": "auto",
         }
         max_tokens = int(self.cfg.get("max_tokens", 16000))
-        # Newer OpenAI reasoning models require max_completion_tokens; xAI uses max_tokens.
         if self.cfg.get("id") == "openai":
             body["max_completion_tokens"] = max_tokens
         else:
@@ -81,12 +74,16 @@ class OpenAIAdapter(BaseAdapter):
         effort = self.cfg.get("effort")
         if effort and effort != "none":
             body["reasoning_effort"] = effort
+        return body
 
-        headers = {
-            "Authorization": f"Bearer {self.cfg['api_key']}",
-            "Content-Type": "application/json",
-        }
-        resp = retrying_post(requests, self._url(), body, headers, TIMEOUT)
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.cfg['api_key']}",
+                "Content-Type": "application/json"}
+
+    def complete(self, system: str, messages: list[Message],
+                 tools: list[ToolSpec]) -> CompletionResult:
+        body = self._build_body(system, messages, tools)
+        resp = retrying_post(requests, self._url(), body, self._headers(), TIMEOUT)
         if resp.status_code != 200:
             raise RuntimeError(
                 f"{self.cfg.get('short', 'OpenAI')} {resp.status_code}: {resp.text[:400]}")
@@ -123,6 +120,74 @@ class OpenAIAdapter(BaseAdapter):
             stop_reason=choice.get("finish_reason", ""),
             limits=limits,
         )
+
+    def stream_complete(self, system, messages, tools, on_delta, cancel=None):
+        """SSE streaming: emits text deltas via on_delta, accumulates tool calls,
+        and aborts promptly on cancel by closing the connection."""
+        body = self._build_body(system, messages, tools)
+        body["stream"] = True
+        body["stream_options"] = {"include_usage": True}
+        resp = requests.post(self._url(), json=body, headers=self._headers(),
+                             timeout=TIMEOUT, stream=True)
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"{self.cfg.get('short', 'OpenAI')} {resp.status_code}: {resp.text[:400]}")
+        text_parts: list[str] = []
+        tool_acc: dict[int, dict] = {}
+        usage = Usage()
+        finish = ""
+        for line in resp.iter_lines(decode_unicode=True):
+            if cancel is not None and cancel.is_set():
+                resp.close()
+                break
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("usage"):
+                usage = Usage(obj["usage"].get("prompt_tokens", 0),
+                              obj["usage"].get("completion_tokens", 0))
+            choice = (obj.get("choices") or [{}])[0]
+            delta = choice.get("delta", {}) or {}
+            if delta.get("content"):
+                text_parts.append(delta["content"])
+                on_delta(delta["content"])
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index", 0)
+                acc = tool_acc.setdefault(idx, {"id": "", "name": "", "args": ""})
+                if tc.get("id"):
+                    acc["id"] = tc["id"]
+                fn = tc.get("function", {}) or {}
+                if fn.get("name"):
+                    acc["name"] = fn["name"]
+                if fn.get("arguments"):
+                    acc["args"] += fn["arguments"]
+            if choice.get("finish_reason"):
+                finish = choice["finish_reason"]
+        tool_calls: list[ToolCall] = []
+        for acc in tool_acc.values():
+            if not acc["name"]:
+                continue
+            try:
+                args = json.loads(acc["args"] or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(ToolCall(acc["id"], acc["name"], args))
+        raw = {"role": "assistant", "content": "".join(text_parts) or None}
+        if tool_calls:
+            raw["tool_calls"] = [
+                {"id": t.id, "type": "function",
+                 "function": {"name": t.name, "arguments": json.dumps(t.args)}}
+                for t in tool_calls
+            ]
+        return CompletionResult(
+            text="".join(text_parts).strip(), thinking="", tool_calls=tool_calls,
+            usage=usage, raw_assistant=raw, stop_reason=finish, limits=None)
 
     def _ping_headers(self):
         body = {

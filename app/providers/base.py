@@ -104,11 +104,13 @@ def run_agent(
     max_iters: int,
     cancel: threading.Event,
     total_usage: Usage,
+    stream: bool = False,
 ) -> str:
     """Run one agent to completion. Returns its final text (its self-report)."""
     messages = list(initial_messages)
     steer_index = 0
     final_text = ""
+    streamer = getattr(adapter, "stream_complete", None) if stream else None
 
     for _ in range(max_iters):
         if cancel.is_set():
@@ -127,7 +129,11 @@ def run_agent(
             on_event("steering", joined)
 
         try:
-            result = adapter.complete(system, messages, tools)
+            if streamer is not None:
+                result = streamer(system, messages, tools,
+                                  lambda chunk: on_event("delta", chunk), cancel)
+            else:
+                result = adapter.complete(system, messages, tools)
         except Exception as exc:  # network / API errors -> surface, stop this agent
             on_event("error", f"Ошибка обращения к модели: {exc}")
             return final_text or f"(ошибка: {exc})"

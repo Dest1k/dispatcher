@@ -501,7 +501,8 @@ class Orchestrator(QThread):
             final = run_agent(make_adapter(provider), system, [initial], TOOL_SPECS,
                               tools.execute, self.steering, on_event,
                               int(self.orch.get("max_tool_iterations", 14)),
-                              combined, self._usage[pid])
+                              combined, self._usage[pid],
+                              stream=self.orch.get("stream", False))
             summaries[pid] = final
             self.live_ids.discard(pid)
             on_event("status", "отключён" if pid in self.disabled else "готово")

@@ -208,6 +208,10 @@ class SettingsDialog(QDialog):
                                    "агенты плавно останавливаются.")
         orch_form.addRow("Бюджет прогона, $", self.budget_usd)
 
+        self.stream = QCheckBox("Стриминг ответов (OpenAI-совместимые; Claude — без стриминга)")
+        self.stream.setChecked(o.get("stream", False))
+        orch_form.addRow(self.stream)
+
         self.auto_push = QCheckBox("Автоматически пушить (не рекомендуется)")
         self.auto_push.setChecked(o.get("auto_push", False))
         orch_form.addRow(self.auto_push)
@@ -266,6 +270,7 @@ class SettingsDialog(QDialog):
             "allow_network": self.allow_network.isChecked(),
             "require_verification": self.require_verification.isChecked(),
             "budget_usd": self.budget_usd.value(),
+            "stream": self.stream.isChecked(),
             "auto_push": self.auto_push.isChecked(),
             "max_tool_iterations": self.max_iters.value(),
             "commit_prefix": self.commit_prefix.text(),

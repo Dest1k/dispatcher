@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget,
 )
@@ -155,6 +156,10 @@ class AgentPanel(QWidget):
             # Provider-supported reasoning *summary* — not raw chain-of-thought.
             self._append(f'<span style="color:#8b949e"><i>💭 сводка рассуждений: '
                          f'{_esc(payload)[:600]}</i></span>')
+        elif kind == "delta":
+            # incremental streamed text — append inline to the current line
+            self.log.moveCursor(QTextCursor.End)
+            self.log.insertPlainText(payload)
         elif kind == "text":
             self._append(f'<span style="color:#e6edf3">{_esc(payload)[:1200]}</span>')
         elif kind == "tool":
