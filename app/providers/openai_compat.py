@@ -11,6 +11,7 @@ import json
 import requests
 
 from .base import BaseAdapter, CompletionResult, Message, ToolCall, ToolSpec, Usage
+from .http import retrying_post
 
 TIMEOUT = 600
 
@@ -85,7 +86,7 @@ class OpenAIAdapter(BaseAdapter):
             "Authorization": f"Bearer {self.cfg['api_key']}",
             "Content-Type": "application/json",
         }
-        resp = requests.post(self._url(), json=body, headers=headers, timeout=TIMEOUT)
+        resp = retrying_post(requests, self._url(), body, headers, TIMEOUT)
         if resp.status_code != 200:
             raise RuntimeError(
                 f"{self.cfg.get('short', 'OpenAI')} {resp.status_code}: {resp.text[:400]}")

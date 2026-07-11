@@ -372,6 +372,22 @@ class Orchestrator(QThread):
             a.setdefault("objective", self.instruction)
             a.setdefault("files", [])
             merged[p["id"]] = a
+
+        # Validate the plan: overlapping exclusive paths / unknown providers ->
+        # safe fallback to a single executor (never risk colliding writes).
+        from .planning import validate_assignments
+        issues = validate_assignments(list(merged.values()),
+                                      {p["id"] for p in implementers})
+        if issues:
+            self.log.emit("План невалиден (" + "; ".join(issues[:3])
+                          + ") — безопасный откат к одному исполнителю.")
+            solo = implementers[0]
+            single = {solo["id"]: fallback[solo["id"]]}
+            self.plan_ready.emit({
+                "overview": "Обнаружены пересечения файлов — безопасный откат к одному исполнителю.",
+                "assignments": list(single.values())})
+            return single
+
         self.plan_ready.emit({"overview": plan.get("overview", ""),
                               "assignments": list(merged.values())})
         return merged

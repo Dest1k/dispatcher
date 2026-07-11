@@ -10,6 +10,7 @@ from __future__ import annotations
 import requests
 
 from .base import BaseAdapter, CompletionResult, Message, ToolCall, ToolSpec, Usage
+from .http import retrying_post
 
 ANTHROPIC_VERSION = "2023-06-01"
 TIMEOUT = 600
@@ -84,7 +85,7 @@ class AnthropicAdapter(BaseAdapter):
             "anthropic-version": ANTHROPIC_VERSION,
             "content-type": "application/json",
         }
-        resp = requests.post(self._url(), json=body, headers=headers, timeout=TIMEOUT)
+        resp = retrying_post(requests, self._url(), body, headers, TIMEOUT)
         if resp.status_code != 200:
             raise RuntimeError(f"Anthropic {resp.status_code}: {resp.text[:400]}")
         limits = _limits_from_headers(resp.headers)
