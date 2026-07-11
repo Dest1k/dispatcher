@@ -97,3 +97,21 @@ def test_cancel_sets_every_agent_event(tmp_path, monkeypatch):
     orc.cancel()
     assert orc.cancel_event.is_set()
     assert all(ev.is_set() for ev in orc.agent_cancels.values())
+
+
+def test_add_agent_already_live_returns_true(tmp_path, monkeypatch):
+    orc = _orc(tmp_path, monkeypatch)
+    _seed_running(orc, ["anthropic"])
+    assert orc.add_agent({"id": "anthropic", "short": "Claude"}) is True
+
+
+def test_add_agent_hotjoin_declines_honestly(tmp_path, monkeypatch):
+    # A model that isn't live can't be safely hot-joined mid-run: the call must
+    # decline (return False) rather than crash the caller or silently pretend.
+    orc = _orc(tmp_path, monkeypatch)
+    _seed_running(orc, ["anthropic"])
+    logs = []
+    orc.log.connect(logs.append)
+    assert orc.add_agent({"id": "xai", "short": "Grok"}) is False
+    assert "xai" not in orc.live_ids
+    assert any("Grok" in m for m in logs)

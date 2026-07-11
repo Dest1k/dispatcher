@@ -182,6 +182,29 @@ class Orchestrator(QThread):
             self.log.emit(f"⛔ {prov} отключён — других исполнителей нет")
         self.agent_event.emit(provider_id, "status", "отключён пользователем")
 
+    def add_agent(self, provider: dict) -> bool:
+        """Attempt to hot-join a model into a running council.
+
+        Returns True only if the model is actually participating. A model that
+        is already live is reported as joined. Otherwise a true mid-run hot-join
+        — spawning a fresh isolated worktree with a *disjoint* ownership zone and
+        its own thread for a late joiner — is not yet supported: doing it without
+        re-planning would either leave the joiner with no enforced zone (breaking
+        file-ownership) or collide with in-flight work. So the join is declined
+        honestly and the model becomes available from the next task, rather than
+        silently doing nothing or crashing the caller.
+        """
+        pid = provider.get("id")
+        if pid in self.live_ids:
+            return True
+        short = provider.get("short", pid)
+        self.log.emit(
+            f"⚠ «{short}»: подключение нового участника на лету пока не "
+            "поддерживается безопасно — модель будет участвовать со следующей "
+            "задачи. Текущую работу продолжают активные участники.")
+        self.agent_event.emit(pid, "status", "присоединится со следующей задачи")
+        return False
+
     def approve(self, push: bool = False) -> None:
         self._decision_value = {"action": "approve", "push": push}
         self._decision.set()
