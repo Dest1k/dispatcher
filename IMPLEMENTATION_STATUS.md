@@ -11,7 +11,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 0 | Audit + committed pytest baseline | ✅ done |
 | 1 | Critical safety (git, isolation, secrets, verification, honest UI) | ✅ done (core) |
 | 2 | Persistent run engine (SQLite, state machine, checkpoints, resume) | ✅ done |
-| 3 | Isolated multi-agent orchestration (worktrees, DAG, review, integrate) | ◐ isolation+integration+review+plan-validation+safe fallback done; multi-round council planned |
+| 3 | Isolated multi-agent orchestration (worktrees, DAG, review, integrate) | ◐ isolation+integration+review+plan-validation (incl. prefix/glob overlap)+safe fallback+mid-run disable/redistribute done; multi-round council planned |
 | 4 | Provider/auth backends (transports, billing source, local vLLM, subscription) | ◐ registry+billing+local+API+retry/backoff done; official subscription agents + streaming planned |
 | 5 | UI + publication (dashboard, diff, approvals, draft PR) | ◐ approval+diff+evidence+billing labels+safety knobs+run-recovery done; run dashboard + 1-click PR planned |
 | 6 | Docs, packaging, hardening | ✅ docs + packaging + CI (GitHub Actions) done; more tests ongoing |
@@ -46,7 +46,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 24 | Draft PR after approval | ✅ push integration branch + one-click "compare/PR" URL; API PR creation optional (token/App) |
 | 25 | Reports stored consistently; no `.gitignore` contradiction | ✅ |
 | 26 | UI doesn't claim raw chain-of-thought | ✅ |
-| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e (56 tests) |
+| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction (94 tests) |
 | 28 | README describes only real functionality | ✅ |
 | 29 | User config migratable without losing projects | ✅ |
 | 30 | Original repo recoverable after failed/cancelled run | ✅ |
@@ -60,6 +60,14 @@ forecast (§8); SSE streaming for OpenAI-compatible agents (gated); persisted
 structured event timeline + run-history view; report/event redaction; secret-
 store status; versioned model catalog with provenance/staleness (§5.2); plan
 validation with safe fallback (§6); CI.
+
+Session-3 additions: configurable per-command & per-verification timeouts
+(§3.4, editable in Settings); per-project verification-commands editor (UI wired
+end-to-end); plan-validation now detects prefix/glob zone overlaps that share a
+file under PathPolicy semantics (not just exact-path collisions), so overlapping
+plans trigger the safe single-executor fallback; push-failure messages redact
+the tokenized remote URL (git echoes it on 4xx) before display/persistence
+(§22); unit coverage for mid-run disable/redistribute/cancel controls.
 
 ## Where to continue next (large / credential-gated)
 
