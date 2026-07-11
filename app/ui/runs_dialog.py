@@ -6,7 +6,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QHBoxLayout, QHeaderView, QLabel, QMessageBox,
-    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QPushButton, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
 )
 
 from ..domain import RunState, is_resumable
@@ -34,6 +34,7 @@ class RunsDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.cellDoubleClicked.connect(self._open_events)
         v.addWidget(self.table, 1)
 
         row = QHBoxLayout()
@@ -67,6 +68,10 @@ class RunsDialog(QDialog):
             f"Прогонов: {len(runs)}"
             + (f" · незавершённых, ждущих решения: {resumable}" if resumable else ""))
 
+    def _open_events(self, row: int, _col: int) -> None:
+        if 0 <= row < len(self._records):
+            EventsDialog(self.store, self._records[row], parent=self).exec()
+
     def _review_selected(self) -> None:
         rows = self.table.selectionModel().selectedRows()
         if not rows:
@@ -96,3 +101,26 @@ class RunsDialog(QDialog):
             res = discard_resumed(self.store, rec, self.project)
         QMessageBox.information(self, "Готово", res.get("message", ""))
         self._reload()
+
+
+class EventsDialog(QDialog):
+    """Structured event timeline for one run."""
+
+    def __init__(self, store, record, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Лента событий — {record.task[:60]}")
+        self.setMinimumSize(640, 440)
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel(f"Статус: {record.state}"))
+        browser = QTextBrowser()
+        browser.setStyleSheet("font-family:'Consolas','Menlo',monospace; font-size:12px;")
+        lines = []
+        for e in store.get_events(record.id):
+            ts = datetime.fromtimestamp(e["ts"]).strftime("%H:%M:%S") if e["ts"] else ""
+            payload = (e["payload"] or "")[:200]
+            lines.append(f"{ts}  [{e['kind']}]  {payload}")
+        browser.setPlainText("\n".join(lines) or "(событий нет)")
+        v.addWidget(browser, 1)
+        close = QPushButton("Закрыть")
+        close.clicked.connect(self.accept)
+        v.addWidget(close)

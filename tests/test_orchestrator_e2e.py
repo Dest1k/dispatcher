@@ -143,6 +143,7 @@ def test_full_run_source_untouched_until_approved(has_git, git_repo, tmp_path,
     runs = store.list_runs("p1")
     assert runs and runs[0].state == "completed"
     assert store.usage_for(runs[0].id)          # token usage recorded
+    assert store.get_events(runs[0].id)         # structured event timeline recorded
     store.close()
 
 

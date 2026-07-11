@@ -46,6 +46,16 @@ def test_run_lifecycle(tmp_path):
     store.close()
 
 
+def test_get_events(tmp_path):
+    store = _store(tmp_path)
+    rid = store.create_run("p", "t")
+    store.add_event(rid, "state", "planning")
+    store.add_event(rid, "anthropic.tool", '{"name":"write_file"}')
+    events = store.get_events(rid)
+    assert [e["kind"] for e in events] == ["state", "anthropic.tool"]
+    store.close()
+
+
 def test_incomplete_and_list(tmp_path):
     store = _store(tmp_path)
     a = store.create_run("p", "a")

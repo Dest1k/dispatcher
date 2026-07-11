@@ -215,6 +215,8 @@ class Orchestrator(QThread):
                                       "плавно останавливаю агентов")
                 except Exception:
                     pass
+            if self.run_id and kind in ("tool", "status", "error"):
+                self.store.add_event(self.run_id, f"{pid}.{kind}", payload)
             self.agent_event.emit(pid, kind, payload)
 
         return cb

@@ -172,6 +172,13 @@ class RunStore:
             rows = self._conn.execute("SELECT * FROM usage WHERE run_id=?", (run_id,)).fetchall()
         return [dict(r) for r in rows]
 
+    def get_events(self, run_id: str, limit: int = 1000) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT ts, kind, payload FROM events WHERE run_id=? ORDER BY id LIMIT ?",
+                (run_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+
     # ---- recovery ---------------------------------------------------
     def reconcile_on_startup(self) -> dict:
         """Resolve non-terminal runs after a restart. Returns counts.
