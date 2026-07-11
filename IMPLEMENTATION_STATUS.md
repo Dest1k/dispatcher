@@ -53,9 +53,22 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 
 Legend: ✅ done · ◐ partial · ⬜ not started · 🚧 in progress
 
-## Where to continue next
+## Landed (in addition to the criteria above)
 
-1. Phase 2 — SQLite persistence + run state machine + checkpoints + resume (criterion 17, 27).
-2. Phase 3 — task DAG scheduler + cross-review + integration agent (beyond the isolation primitives already in place).
-3. Phase 4 — official subscription-agent adapters (Codex / Claude Agent SDK / xAI) behind the capability-gated `SubscriptionAgentTransport` boundary (currently marked unavailable); Docker container-per-agent backend.
-4. Phase 5 — full run dashboard + task-graph view.
+Retry/backoff with Retry-After (criterion 19); per-run budget enforcement +
+forecast (§8); SSE streaming for OpenAI-compatible agents (gated); persisted
+structured event timeline + run-history view; report/event redaction; secret-
+store status; versioned model catalog with provenance/staleness (§5.2); plan
+validation with safe fallback (§6); CI.
+
+## Where to continue next (large / credential-gated)
+
+1. Multi-round council (§3.7): independent proposals → critique → cross-review
+   across agents (the isolation/integration/verify/review primitives exist).
+2. Adaptive escalation: start solo, escalate to pair/council on verification
+   failure (currently `adaptive` ≈ pair).
+3. Docker container-per-agent for the *implementation* step (commands already
+   sandbox in Docker); official subscription-agent transports (Codex / Claude
+   Agent SDK / xAI) behind the capability-gated boundary — need official auth.
+4. Anthropic SSE streaming (thinking-block round-trip needs care); a richer run
+   dashboard / task-graph view; API-based draft PR (needs a GitHub token/App).
