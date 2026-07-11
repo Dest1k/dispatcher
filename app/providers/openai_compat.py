@@ -58,14 +58,18 @@ class OpenAIAdapter(BaseAdapter):
         body: dict = {
             "model": self.cfg["model"],
             "messages": self._to_messages(system, messages),
-            "tools": [
+        }
+        # Only advertise tools when there are any: OpenAI-compatible APIs reject
+        # `tool_choice` (and sometimes an empty `tools`) when no tools are given,
+        # which would break the tool-less planning / review / report calls.
+        if tools:
+            body["tools"] = [
                 {"type": "function",
                  "function": {"name": t.name, "description": t.description,
                               "parameters": t.parameters}}
                 for t in tools
-            ],
-            "tool_choice": "auto",
-        }
+            ]
+            body["tool_choice"] = "auto"
         max_tokens = int(self.cfg.get("max_tokens", 16000))
         if self.cfg.get("id") == "openai":
             body["max_completion_tokens"] = max_tokens

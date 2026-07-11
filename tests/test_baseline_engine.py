@@ -127,6 +127,28 @@ def test_openai_conversion():
     assert conv[3]["role"] == "tool" and conv[3]["tool_call_id"] == "a1"
 
 
+def test_openai_body_omits_tool_choice_when_no_tools():
+    from app.providers.base import ToolSpec
+    oai = make_adapter(_default_config()["providers"]["openai"])
+    # tool-less call (planning / review / report): no tools, no tool_choice —
+    # OpenAI-compatible APIs reject tool_choice when no tools are supplied.
+    body = oai._build_body("sys", [Message("user", text="hi")], [])
+    assert "tools" not in body and "tool_choice" not in body
+    # with tools, both are present
+    spec = ToolSpec("read_file", "read", {"type": "object", "properties": {}})
+    body2 = oai._build_body("sys", [Message("user", text="hi")], [spec])
+    assert body2["tool_choice"] == "auto"
+    assert body2["tools"][0]["function"]["name"] == "read_file"
+
+
+def test_openai_token_field_by_provider():
+    # OpenAI uses max_completion_tokens; xAI (and other compatibles) max_tokens.
+    oai = make_adapter(_default_config()["providers"]["openai"])
+    xai = make_adapter(_default_config()["providers"]["xai"])
+    assert "max_completion_tokens" in oai._build_body("s", [], [])
+    assert "max_tokens" in xai._build_body("s", [], [])
+
+
 # ---- git (read-only helpers; mutation is covered by test_workspace) --
 def test_git_readonly_helpers(has_git, git_repo):
     assert git_service.has_repo(str(git_repo))
