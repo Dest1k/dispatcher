@@ -10,7 +10,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 |---|---|---|
 | 0 | Audit + committed pytest baseline | ✅ done |
 | 1 | Critical safety (git, isolation, secrets, verification, honest UI) | ✅ done (core) |
-| 2 | Persistent run engine (SQLite, state machine, checkpoints, resume) | ⬜ not started |
+| 2 | Persistent run engine (SQLite, state machine, checkpoints, resume) | ✅ done |
 | 3 | Isolated multi-agent orchestration (worktrees, DAG, review, integrate) | ◐ isolation+integration+review+safe fallback done; task DAG + multi-round council planned |
 | 4 | Provider/auth backends (transports, billing source, local vLLM, subscription) | ◐ registry+billing+local+API done; official subscription agents + streaming planned |
 | 5 | UI + publication (dashboard, diff, approvals, draft PR) | ◐ approval+diff+evidence+billing labels+safety knobs done; run dashboard + 1-click PR planned |
@@ -36,7 +36,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 14 | No unofficial browser/cookie auth | ✅ (by design; documented) |
 | 15 | Local OpenAI-compatible endpoints supported | ✅ |
 | 16 | Provider list dynamic, not hardcoded to three | ✅ |
-| 17 | Runs persist across restart | ⬜ Phase 2 |
+| 17 | Runs persist across restart | ✅ |
 | 18 | Cancellation terminates process trees | ✅ |
 | 19 | Retry/backoff for transient errors | ✅ |
 | 20 | Rate limit / quota / budget separate in UI | ✅ |
@@ -46,7 +46,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 24 | Draft PR after approval | ◐ integration branch + PR helper; needs a GitHub token/App |
 | 25 | Reports stored consistently; no `.gitignore` contradiction | ✅ |
 | 26 | UI doesn't claim raw chain-of-thought | ✅ |
-| 27 | Tests cover git/sandbox/orchestration/persistence/security | ◐ git/sandbox/security/providers covered; persistence in Phase 2 |
+| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e (56 tests) |
 | 28 | README describes only real functionality | ✅ |
 | 29 | User config migratable without losing projects | ✅ |
 | 30 | Original repo recoverable after failed/cancelled run | ✅ |
