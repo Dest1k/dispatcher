@@ -9,12 +9,12 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Audit + committed pytest baseline | ✅ done |
-| 1 | Critical safety (git, isolation, secrets, verification, honest UI) | 🚧 in progress |
+| 1 | Critical safety (git, isolation, secrets, verification, honest UI) | ✅ done (core) |
 | 2 | Persistent run engine (SQLite, state machine, checkpoints, resume) | ⬜ not started |
-| 3 | Isolated multi-agent orchestration (worktrees, DAG, review, integrate) | ◐ partial (worktrees + path scope landed in Phase 1) |
-| 4 | Provider/auth backends (transports, billing source, local vLLM, subscription) | ◐ partial (registry + billing model landed in Phase 1) |
-| 5 | UI + publication (dashboard, diff, approvals, draft PR) | 🚧 in progress |
-| 6 | Docs, packaging, hardening | 🚧 in progress |
+| 3 | Isolated multi-agent orchestration (worktrees, DAG, review, integrate) | ◐ isolation+integration+review+safe fallback done; task DAG + multi-round council planned |
+| 4 | Provider/auth backends (transports, billing source, local vLLM, subscription) | ◐ registry+billing+local+API done; official subscription agents + streaming planned |
+| 5 | UI + publication (dashboard, diff, approvals, draft PR) | ◐ approval+diff+evidence+billing labels+safety knobs done; run dashboard + 1-click PR planned |
+| 6 | Docs, packaging, hardening | ✅ docs + packaging done; CI + more tests planned |
 
 ## Non-negotiable acceptance criteria (§18)
 
