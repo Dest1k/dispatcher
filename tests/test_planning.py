@@ -30,3 +30,10 @@ def test_same_provider_repeat_ok():
         {"provider": "a", "files": ["x.py"]},
     ], {"a"})
     assert issues == []
+
+
+def test_compare_url_helper():
+    from app.orchestrator import _compare_url
+    assert _compare_url("owner/repo", "dispatcher/x/integration") == \
+        "https://github.com/owner/repo/compare/dispatcher/x/integration?expand=1"
+    assert _compare_url("", "b") == ""

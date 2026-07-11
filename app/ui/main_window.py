@@ -98,6 +98,11 @@ class MainWindow(QMainWindow):
         new_btn.clicked.connect(self._new_project)
         v.addWidget(new_btn)
 
+        runs_btn = QPushButton("🗂 История прогонов")
+        runs_btn.setObjectName("Ghost")
+        runs_btn.clicked.connect(self._open_runs)
+        v.addWidget(runs_btn)
+
         settings_btn = QPushButton("⚙ Настройки моделей")
         settings_btn.setObjectName("Ghost")
         settings_btn.clicked.connect(self._open_settings)
@@ -316,6 +321,13 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Git статус", text or "(чисто)")
 
     # ================= settings =================
+    def _open_runs(self) -> None:
+        project = self._current_project()
+        if not project:
+            return
+        from .runs_dialog import RunsDialog
+        RunsDialog(self.run_store, self.config, project, parent=self).exec()
+
     def _open_settings(self) -> None:
         dlg = SettingsDialog(self.config, parent=self)
         if dlg.exec():

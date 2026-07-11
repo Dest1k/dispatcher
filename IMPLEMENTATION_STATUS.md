@@ -43,7 +43,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 21 | Secrets in OS secret store | ✅ (keyring w/ documented fallback) |
 | 22 | Logs/reports redact credentials | ✅ |
 | 23 | Full diff + verification evidence before approval | ✅ |
-| 24 | Draft PR after approval | ◐ integration branch + PR helper; needs a GitHub token/App |
+| 24 | Draft PR after approval | ✅ push integration branch + one-click "compare/PR" URL; API PR creation optional (token/App) |
 | 25 | Reports stored consistently; no `.gitignore` contradiction | ✅ |
 | 26 | UI doesn't claim raw chain-of-thought | ✅ |
 | 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e (56 tests) |

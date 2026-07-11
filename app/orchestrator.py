@@ -90,6 +90,13 @@ def _extract_json(text: str) -> dict | None:
         return None
 
 
+def _compare_url(github_repo: str, branch: str) -> str:
+    """A one-click 'open a pull request' URL for the pushed integration branch."""
+    if not github_repo or "/" not in github_repo:
+        return ""
+    return f"https://github.com/{github_repo}/compare/{branch}?expand=1"
+
+
 class _Cancel:
     def __init__(self, *events):
         self._events = events
@@ -609,9 +616,13 @@ class Orchestrator(QThread):
                 self.rw.push_integration(self.project.get("github_url", ""),
                                          self.project.get("github_token", ""))
                 result["pushed"] = True
+                pr_url = _compare_url(self.project.get("github_repo", ""),
+                                      self.rw.integration_branch)
+                result["pr_url"] = pr_url
                 result["message"] = (f"Коммит {commit} запушен в ветку "
-                                     f"{self.rw.integration_branch}. Открой из неё PR "
-                                     "(в целевую ветку напрямую не пушим).")
+                                     f"{self.rw.integration_branch}. "
+                                     + (f"Открыть PR: {pr_url}" if pr_url
+                                        else "Открой из неё PR (в целевую ветку не пушим)."))
             else:
                 result["message"] = (f"Коммит {commit} в локальной ветке "
                                      f"{self.rw.integration_branch}. Пуш не запрашивался.")

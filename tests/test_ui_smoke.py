@@ -56,3 +56,19 @@ def test_agent_panel_shows_billing(qapp, tmp_config):
 def test_no_autoping_on_startup(window, monkeypatch):
     # Constructing the window must not have started a LimitsChecker (no paid ping).
     assert window._limits_checker is None
+
+
+def test_runs_dialog_lists_runs(qapp, tmp_config, tmp_path):
+    from app.config import Config, _default_config
+    from app.persistence import RunStore
+    from app.ui.runs_dialog import RunsDialog
+    store = RunStore(tmp_path / "db.sqlite")
+    cfg = Config(_default_config())
+    project = {"id": "pX", "name": "Demo", "local_path": str(tmp_path)}
+    rid = store.create_run("pX", "сделать что-то")
+    store.add_usage(rid, "anthropic", 100, 50, 0.0011)
+    dlg = RunsDialog(store, cfg, project)
+    assert dlg.table.rowCount() == 1
+    assert "сделать" in dlg.table.item(0, 0).text()
+    dlg.close()
+    store.close()
