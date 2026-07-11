@@ -232,6 +232,22 @@ class SettingsDialog(QDialog):
         self.max_iters.setValue(int(o.get("max_tool_iterations", 24)))
         orch_form.addRow("Лимит шагов инструментов на модель", self.max_iters)
 
+        self.command_timeout = QSpinBox()
+        self.command_timeout.setRange(5, 7200)
+        self.command_timeout.setSuffix(" с")
+        self.command_timeout.setValue(int(o.get("command_timeout", 300)))
+        self.command_timeout.setToolTip("Максимум на одну команду в песочнице; "
+                                        "по истечении процесс и его дерево убиваются.")
+        orch_form.addRow("Таймаут команды", self.command_timeout)
+
+        self.verify_timeout = QSpinBox()
+        self.verify_timeout.setRange(10, 14400)
+        self.verify_timeout.setSuffix(" с")
+        self.verify_timeout.setValue(int(o.get("verify_timeout", 900)))
+        self.verify_timeout.setToolTip("Максимум на весь этап верификации перед "
+                                       "публикацией.")
+        orch_form.addRow("Таймаут верификации", self.verify_timeout)
+
         self.commit_prefix = QLineEdit(o.get("commit_prefix", ""))
         self.commit_prefix.setPlaceholderText("напр. [AI] ")
         orch_form.addRow("Префикс коммита", self.commit_prefix)
@@ -284,6 +300,8 @@ class SettingsDialog(QDialog):
             "stream": self.stream.isChecked(),
             "auto_push": self.auto_push.isChecked(),
             "max_tool_iterations": self.max_iters.value(),
+            "command_timeout": self.command_timeout.value(),
+            "verify_timeout": self.verify_timeout.value(),
             "commit_prefix": self.commit_prefix.text(),
         })
         self.config.save()

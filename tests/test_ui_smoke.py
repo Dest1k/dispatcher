@@ -37,9 +37,14 @@ def test_settings_dialog_dynamic_tabs(qapp, tmp_config):
     assert dlg.sandbox_mode.count() == 3
     assert dlg.execution_mode.count() == 4
     assert dlg.require_verification is not None
+    # execution-time limits are editable knobs, not just JSON
+    dlg.command_timeout.setValue(120)
+    dlg.verify_timeout.setValue(600)
     dlg._save()
     assert cfg.orchestration["sandbox_mode"] == "restricted"
     assert cfg.orchestration["auto_push"] is False
+    assert cfg.orchestration["command_timeout"] == 120
+    assert cfg.orchestration["verify_timeout"] == 600
     dlg.close()
 
 
