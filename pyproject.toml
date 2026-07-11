@@ -1,0 +1,24 @@
+[project]
+name = "dispatcher"
+version = "0.2.0"
+description = "Multi-agent software-engineering control center (isolation, verification, integration, observability over cloud agents, direct APIs and local models)."
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.6.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+secrets = ["keyring>=24.0.0"]
+dev = ["pytest>=7.4.0"]
+
+[project.scripts]
+dispatcher = "run:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.setuptools]
+packages = ["app"]
