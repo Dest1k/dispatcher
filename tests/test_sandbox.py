@@ -88,3 +88,16 @@ def test_factory_docker_falls_back_when_unavailable(tmp_path, monkeypatch):
     assert sb.backend == "restricted"
     assert getattr(sb, "fell_back", False) is True
     sb.close()
+
+
+def test_factory_honours_configured_timeout(tmp_path):
+    sb = make_sandbox("restricted", str(tmp_path), timeout=42)
+    assert sb.timeout == 42
+    sb.close()
+
+
+def test_config_exposes_execution_timeouts():
+    from app.config import _default_config
+    orch = _default_config()["orchestration"]
+    assert orch["command_timeout"] == 300
+    assert orch["verify_timeout"] == 900

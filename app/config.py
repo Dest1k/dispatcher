@@ -150,6 +150,8 @@ def _default_config() -> dict[str, Any]:
             "commit_prefix": "",
             "sandbox_mode": "restricted",       # restricted | docker | unsafe_local
             "allow_network": False,
+            "command_timeout": 300,             # per shell command, seconds
+            "verify_timeout": 900,              # whole verification stage, seconds
         },
         "projects": [],
         "active_project": None,

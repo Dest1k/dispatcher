@@ -484,7 +484,8 @@ class Orchestrator(QThread):
         combined = _Cancel(self.cancel_event, self.agent_cancels[pid], self.budget_event)
         sandbox = make_sandbox(self.orch.get("sandbox_mode", "restricted"),
                                str(ws.path),
-                               allow_network=self.orch.get("allow_network", False))
+                               allow_network=self.orch.get("allow_network", False),
+                               timeout=int(self.orch.get("command_timeout", 300)))
         try:
             tools = ProjectTools(str(ws.path), policy=ws.policy, sandbox=sandbox,
                                  cancel=combined)
@@ -555,7 +556,8 @@ class Orchestrator(QThread):
         return run_verification(str(self.rw.integration_path), commands,
                                 mode=self.orch.get("sandbox_mode", "restricted"),
                                 allow_network=self.orch.get("allow_network", False),
-                                cancel=self.cancel_event)
+                                cancel=self.cancel_event,
+                                timeout=int(self.orch.get("verify_timeout", 900)))
 
     # ---- report -----------------------------------------------------
     def _compose_report(self, summaries, review_notes, integ, verification) -> str:
