@@ -63,6 +63,37 @@ def test_no_autoping_on_startup(window, monkeypatch):
     assert window._limits_checker is None
 
 
+def test_panel_toggle_running_does_not_crash(window):
+    """Toggling a panel while a run is live must route to the orchestrator's
+    disable/hot-join controls without raising (regression: add_agent was
+    missing and raised AttributeError)."""
+    import threading
+
+    from app.orchestrator import Orchestrator
+    win = window
+    win.config.providers["anthropic"]["api_key"] = "sk-test"
+    win.config.save()
+    win.config.add_project("Demo", "/tmp/demo-toggle", "o/r",
+                           "https://github.com/o/r.git", "main", "")
+    win._refresh_projects()
+
+    project = {"id": "p1", "name": "Demo", "local_path": "/tmp/demo-toggle"}
+    orc = Orchestrator(win.config, project, "task", store=win.run_store)
+    orc.live_ids.add("anthropic")
+    orc.agent_cancels["anthropic"] = threading.Event()
+    win.orchestrator = orc
+    win.running_project_id = "p1"
+
+    panel = win.agent_panels["anthropic"]
+    panel.set_live(True)
+    win._on_panel_toggle("anthropic")            # disable a live agent
+    assert "anthropic" in orc.disabled
+    assert panel.live is False
+
+    win._on_panel_toggle("anthropic")            # attempt hot-join -> declined
+    assert panel.live is False                    # honestly not re-added
+
+
 def test_runs_dialog_lists_runs(qapp, tmp_config, tmp_path):
     from app.config import Config, _default_config
     from app.persistence import RunStore
