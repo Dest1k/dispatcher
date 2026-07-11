@@ -13,18 +13,23 @@ and process-tree kill; verification gate; human approval before publish;
 redaction; dynamic provider/billing model; honest UI (reasoning summary label,
 separate rate-limit/quota/budget, no autoping); reports stored outside the repo.
 
-## Phase 2 — Persistent run engine ⬜
-- SQLite persistence for projects, runs, tasks, events, artifacts, usage,
-  verification, approvals, with schema migrations.
-- Explicit run state machine + checkpoints after every transition.
-- Restart discovery and safe resume of incomplete runs.
+## Phase 2 — Persistent run engine ✅
+SQLite persistence for runs, events and usage with a schema version; an explicit
+run state machine (`app/domain.py`) with checkpoints after every transition;
+restart reconciliation and safe resume of runs parked at the approval gate.
+Covered by `test_persistence.py` / `test_resume.py`.
 
 ## Phase 3 — Isolated multi-agent orchestration ◐
 Done: per-agent worktrees, enforced path scope, sequential patch integration,
-independent cross-review, safe single-executor fallback, reassign-to-one on
-disable. Planned: a validated task DAG scheduler (cycles/overlap/ budget checks);
-multi-round council (independent proposals → critique → plan → implement →
-cross-review → integrate → verify → synthesize); adaptive escalation.
+independent cross-review, safe single-executor fallback, plan validation that
+rejects prefix/glob zone overlaps (not just exact-path collisions), and mid-run
+**drop**: disabling a live agent cancels only it and reassigns its work to
+exactly one remaining agent. Planned: a validated task DAG scheduler
+(cycles/overlap/budget checks); multi-round council (independent proposals →
+critique → plan → implement → cross-review → integrate → verify → synthesize);
+adaptive escalation; mid-run **hot-join** of a new agent (currently declined
+honestly — a safe late-join needs a fresh isolated worktree with a disjoint
+ownership zone and re-planning, so the model participates from the next task).
 
 ## Phase 4 — Providers & auth ◐
 Done: dynamic registry, transport/auth/billing model, direct-API + local
@@ -43,7 +48,8 @@ viewer, API-based draft PR (needs a GitHub token/App).
 
 ## Phase 6 — Docs, packaging, hardening 🚧
 Done: README/ARCHITECTURE/SECURITY/PROVIDERS/MIGRATION/DEVELOPMENT/ROADMAP;
-Windows PyInstaller spec. Planned: CI, broader tests, dead-code sweeps.
+Windows PyInstaller spec; GitHub Actions CI (offscreen pytest); 100-test suite.
+Planned: broader tests, dead-code sweeps.
 
 ## Requires external credentials / provider support
 - Official subscription-backed agent transports (Codex / Claude Agent SDK / xAI).

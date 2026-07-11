@@ -69,6 +69,13 @@ plans trigger the safe single-executor fallback; push-failure messages redact
 the tokenized remote URL (git echoes it on 4xx) before display/persistence
 (§22); unit coverage for mid-run disable/redistribute/cancel controls.
 
+Session-3 bug fixes (all with regression tests): OpenAI-compatible requests no
+longer send `tool_choice` on tool-less planning/review/report calls (would 400);
+streamed assistant text is no longer double-rendered (delta + text) and streamed
+deltas are now redacted; `Orchestrator.add_agent` added so the mid-run panel
+hot-join toggle no longer raises AttributeError (declines late-join honestly).
+Test suite 77 → 100.
+
 ## Where to continue next (large / credential-gated)
 
 1. Multi-round council (§3.7): independent proposals → critique → cross-review
