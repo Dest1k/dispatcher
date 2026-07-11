@@ -61,3 +61,71 @@ def test_stream_cancel_closes_connection(monkeypatch):
     adapter = make_adapter(_default_config()["providers"]["openai"])
     adapter.stream_complete("sys", [], [], lambda c: None, cancel)
     assert resp.closed
+
+
+def _an(obj):
+    # Anthropic SSE payloads arrive as data: lines with a typed JSON object.
+    return "data: " + json.dumps(obj)
+
+
+def test_anthropic_stream_accumulates_text_thinking_and_tools(monkeypatch):
+    import app.providers.anthropic as anth
+    lines = [
+        _an({"type": "message_start", "message": {"usage": {"input_tokens": 7}}}),
+        _an({"type": "content_block_start", "index": 0,
+             "content_block": {"type": "thinking", "thinking": ""}}),
+        _an({"type": "content_block_delta", "index": 0,
+             "delta": {"type": "thinking_delta", "thinking": "думаю"}}),
+        _an({"type": "content_block_delta", "index": 0,
+             "delta": {"type": "signature_delta", "signature": "sig"}}),
+        _an({"type": "content_block_stop", "index": 0}),
+        _an({"type": "content_block_start", "index": 1,
+             "content_block": {"type": "text", "text": ""}}),
+        _an({"type": "content_block_delta", "index": 1,
+             "delta": {"type": "text_delta", "text": "При"}}),
+        _an({"type": "content_block_delta", "index": 1,
+             "delta": {"type": "text_delta", "text": "вет"}}),
+        _an({"type": "content_block_stop", "index": 1}),
+        _an({"type": "content_block_start", "index": 2,
+             "content_block": {"type": "tool_use", "id": "t1", "name": "write_file",
+                               "input": {}}}),
+        _an({"type": "content_block_delta", "index": 2,
+             "delta": {"type": "input_json_delta", "partial_json": "{\"path\":"}}),
+        _an({"type": "content_block_delta", "index": 2,
+             "delta": {"type": "input_json_delta", "partial_json": " \"a.txt\"}"}}),
+        _an({"type": "content_block_stop", "index": 2}),
+        _an({"type": "message_delta", "delta": {"stop_reason": "tool_use"},
+             "usage": {"output_tokens": 4}}),
+        _an({"type": "message_stop"}),
+    ]
+    monkeypatch.setattr(anth.requests, "post", lambda *a, **k: _StreamResp(lines))
+    adapter = make_adapter(_default_config()["providers"]["anthropic"])
+    deltas = []
+    result = adapter.stream_complete("sys", [], [], deltas.append, threading.Event())
+
+    assert deltas == ["При", "вет"]                    # only text is streamed
+    assert result.text == "Привет"
+    assert result.thinking == "думаю"                   # captured, not streamed
+    assert result.usage.input_tokens == 7 and result.usage.output_tokens == 4
+    assert result.stop_reason == "tool_use"
+    # tool call assembled from streamed partial JSON
+    assert result.tool_calls[0].name == "write_file"
+    assert result.tool_calls[0].args == {"path": "a.txt"}
+    # raw_assistant round-trips ordered blocks (thinking, text, tool_use) with
+    # the tool_use input resolved and the thinking signature preserved
+    types = [b["type"] for b in result.raw_assistant]
+    assert types == ["thinking", "text", "tool_use"]
+    assert result.raw_assistant[0]["signature"] == "sig"
+    assert result.raw_assistant[2]["input"] == {"path": "a.txt"}
+
+
+def test_anthropic_stream_cancel_closes_connection(monkeypatch):
+    import app.providers.anthropic as anth
+    cancel = threading.Event()
+    cancel.set()
+    resp = _StreamResp([_an({"type": "content_block_delta", "index": 0,
+                             "delta": {"type": "text_delta", "text": "x"}})])
+    monkeypatch.setattr(anth.requests, "post", lambda *a, **k: resp)
+    adapter = make_adapter(_default_config()["providers"]["anthropic"])
+    adapter.stream_complete("sys", [], [], lambda c: None, cancel)
+    assert resp.closed
