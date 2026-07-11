@@ -41,6 +41,13 @@ class ProviderForm(QWidget):
         self.model = QLineEdit(provider.get("model", ""))
         form.addRow("Модель", self.model)
 
+        self.catalog_label = QLabel("")
+        self.catalog_label.setObjectName("Meta")
+        self.catalog_label.setWordWrap(True)
+        self.model.textChanged.connect(self._update_catalog)
+        form.addRow("", self.catalog_label)
+        self._update_catalog()
+
         self.effort = QComboBox()
         self.effort.addItems(provider.get("effort_options", []) + ["none"])
         current = provider.get("effort", "")
@@ -101,6 +108,10 @@ class ProviderForm(QWidget):
             self.test_result.setStyleSheet("color:#f85149;")
         finally:
             self.test_btn.setEnabled(True)
+
+    def _update_catalog(self) -> None:
+        from ..catalog import describe
+        self.catalog_label.setText("ℹ " + describe(self.model.text().strip()))
 
     def collect(self) -> dict:
         updated = dict(self.provider)

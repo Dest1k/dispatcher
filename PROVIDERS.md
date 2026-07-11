@@ -71,3 +71,10 @@ API key and a subscription agent for the same model remain **separate backends**
 Model IDs, context windows, effort options and prices change over time and are
 **user-editable** in Settings. Dispatcher does not hardcode "maximum" presets as
 permanent facts; defaults are conservative and configurable.
+
+`app/catalog.py` is a small **versioned capability catalog**: for a model it can
+actually source, it records the context window, pricing, effort options, **the
+date it was verified**, and the **source**, and marks the entry **stale** past a
+threshold. Models it cannot verify (e.g. future IDs) return **"no catalog data —
+verify with the provider"** in Settings rather than a fabricated number. This
+keeps guessed values from being presented as current facts.
