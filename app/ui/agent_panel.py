@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget,
 )
@@ -43,8 +43,17 @@ class AgentPanel(QWidget):
 
         title_box = QVBoxLayout()
         title_box.setSpacing(0)
-        self.name_label = QLabel(provider["label"])
+        billing = {
+            "api": "API-оплата",
+            "subscription": provider.get("subscription_tier") or "подписка",
+            "local": "локально · без оплаты",
+        }.get(provider.get("billing_source"), "")
+        name_html = provider["label"]
+        if billing:
+            name_html += f' <span style="color:#6e7681; font-weight:400;">· {billing}</span>'
+        self.name_label = QLabel(name_html)
         self.name_label.setObjectName("AgentName")
+        self.name_label.setTextFormat(Qt.RichText)
         self.role_label = QLabel("ожидание задачи")
         self.role_label.setObjectName("AgentRole")
         self.meta_label = QLabel("лимит: —")

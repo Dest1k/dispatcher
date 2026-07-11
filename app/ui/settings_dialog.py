@@ -156,8 +156,38 @@ class SettingsDialog(QDialog):
         self.lead.setCurrentIndex(li)
         orch_form.addRow("Ведущая модель", self.lead)
 
-        self.auto_push = QCheckBox("Автоматически пушить в GitHub после работы")
-        self.auto_push.setChecked(o.get("auto_push", True))
+        self.execution_mode = QComboBox()
+        self.execution_mode.addItem("Один исполнитель (solo)", "solo")
+        self.execution_mode.addItem("Пара: исполнитель + ревьюер (pair)", "pair")
+        self.execution_mode.addItem("Адаптивно (adaptive)", "adaptive")
+        self.execution_mode.addItem("Полный консилиум (full_council)", "full_council")
+        em_idx = self.execution_mode.findData(o.get("execution_mode", "pair"))
+        self.execution_mode.setCurrentIndex(max(0, em_idx))
+        orch_form.addRow("Режим выполнения", self.execution_mode)
+
+        self.sandbox_mode = QComboBox()
+        self.sandbox_mode.addItem("Ограниченный (без секретов, без сети) — рекомендуется", "restricted")
+        self.sandbox_mode.addItem("Docker (строгая изоляция, нужен Docker)", "docker")
+        self.sandbox_mode.addItem("⚠ Небезопасный локальный (полное окружение хоста)", "unsafe_local")
+        sb_idx = self.sandbox_mode.findData(o.get("sandbox_mode", "restricted"))
+        self.sandbox_mode.setCurrentIndex(max(0, sb_idx))
+        self.sandbox_mode.currentIndexChanged.connect(self._on_sandbox_changed)
+        orch_form.addRow("Песочница команд", self.sandbox_mode)
+
+        self.sandbox_warning = QLabel("")
+        self.sandbox_warning.setWordWrap(True)
+        orch_form.addRow("", self.sandbox_warning)
+
+        self.allow_network = QCheckBox("Разрешить сеть в песочнице (установка пакетов и т.п.)")
+        self.allow_network.setChecked(o.get("allow_network", False))
+        orch_form.addRow(self.allow_network)
+
+        self.require_verification = QCheckBox("Требовать верификацию перед публикацией")
+        self.require_verification.setChecked(o.get("require_verification", True))
+        orch_form.addRow(self.require_verification)
+
+        self.auto_push = QCheckBox("Автоматически пушить (не рекомендуется)")
+        self.auto_push.setChecked(o.get("auto_push", False))
         orch_form.addRow(self.auto_push)
 
         self.max_iters = QSpinBox()
@@ -170,6 +200,7 @@ class SettingsDialog(QDialog):
         orch_form.addRow("Префикс коммита", self.commit_prefix)
 
         self.tabs.addTab(orch_tab, "Оркестрация")
+        self._on_sandbox_changed()
         root.addWidget(self.tabs, 1)
 
         buttons = QHBoxLayout()
@@ -183,12 +214,35 @@ class SettingsDialog(QDialog):
         buttons.addWidget(save)
         root.addLayout(buttons)
 
+    def _on_sandbox_changed(self) -> None:
+        mode = self.sandbox_mode.currentData()
+        if mode == "unsafe_local":
+            self.sandbox_warning.setText(
+                "⚠ ОПАСНО: команды моделей получат полное окружение хоста "
+                "(включая ключи и токены) и доступ к сети. Используй только для "
+                "доверенных задач.")
+            self.sandbox_warning.setStyleSheet("color:#f85149; font-weight:600;")
+        elif mode == "docker":
+            self.sandbox_warning.setText(
+                "Требуется установленный Docker. Если он недоступен — будет "
+                "использована ограниченная песочница.")
+            self.sandbox_warning.setStyleSheet("color:#8b949e;")
+        else:
+            self.sandbox_warning.setText(
+                "Команды выполняются без секретов хоста; сеть по умолчанию "
+                "не гарантированно изолирована без Docker.")
+            self.sandbox_warning.setStyleSheet("color:#8b949e;")
+
     def _save(self) -> None:
         for pid, form in self.forms.items():
             self.config.providers[pid] = form.collect()
         self.config.orchestration.update({
             "mode": self.mode.currentData(),
             "lead_provider": self.lead.currentData(),
+            "execution_mode": self.execution_mode.currentData(),
+            "sandbox_mode": self.sandbox_mode.currentData(),
+            "allow_network": self.allow_network.isChecked(),
+            "require_verification": self.require_verification.isChecked(),
             "auto_push": self.auto_push.isChecked(),
             "max_tool_iterations": self.max_iters.value(),
             "commit_prefix": self.commit_prefix.text(),

@@ -33,7 +33,24 @@ def test_settings_dialog_dynamic_tabs(qapp, tmp_config):
     dlg = SettingsDialog(cfg)
     # one tab per provider + the orchestration tab
     assert dlg.tabs.count() == len(cfg.ordered_providers()) + 1
+    # safety knobs are exposed in the UI, not just JSON
+    assert dlg.sandbox_mode.count() == 3
+    assert dlg.execution_mode.count() == 4
+    assert dlg.require_verification is not None
+    dlg._save()
+    assert cfg.orchestration["sandbox_mode"] == "restricted"
+    assert cfg.orchestration["auto_push"] is False
     dlg.close()
+
+
+def test_agent_panel_shows_billing(qapp, tmp_config):
+    from app.config import Config, _default_config
+    from app.ui.agent_panel import AgentPanel
+    cfg = Config(_default_config())
+    grok = AgentPanel(cfg.providers["xai"])
+    assert "SuperGrok" in grok.name_label.text()
+    local = AgentPanel(cfg.providers["local"])
+    assert "локально" in local.name_label.text()
 
 
 def test_no_autoping_on_startup(window, monkeypatch):
