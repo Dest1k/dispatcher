@@ -1,9 +1,8 @@
 """Settings: per-model config (model id, effort, key, price) + orchestration."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGroupBox,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QTabWidget,
     QVBoxLayout, QWidget,
 )

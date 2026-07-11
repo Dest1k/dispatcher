@@ -4,7 +4,6 @@ behaves. Constructed without starting the QThread, so no network is touched.
 """
 import os
 
-import pytest
 
 POSIX = os.name != "nt"
 

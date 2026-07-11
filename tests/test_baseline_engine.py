@@ -3,10 +3,8 @@
 Records the working behavior established in Phase 0. Uses fake adapters only —
 no network.
 """
-import json
 import threading
 
-import pytest
 
 from app import git_service
 from app.config import Config, _default_config

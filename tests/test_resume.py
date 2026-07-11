@@ -2,7 +2,6 @@
 import os
 import subprocess
 
-import pytest
 
 from app.domain import RunState
 from app.persistence import RunStore

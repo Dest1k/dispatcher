@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QScrollArea, QTextBrowser, QVBoxLayout, QWidget,
+    QFrame, QLabel, QScrollArea, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 _BUBBLE_CSS = """

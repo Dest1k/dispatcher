@@ -4,7 +4,7 @@ from __future__ import annotations
 from PySide6.QtCore import QThread, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSplitter,
     QVBoxLayout, QWidget,
 )
@@ -586,7 +586,6 @@ class MainWindow(QMainWindow):
             self._on_log("Изменения отклонены — исходный репозиторий не тронут")
 
     def _on_report_ready(self, report: str, usage: dict) -> None:
-        project = self._current_project()
         self.chat.add_message("assistant", report)
         if self.running_project_id:
             self.config.add_chat_message(

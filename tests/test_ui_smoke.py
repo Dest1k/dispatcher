@@ -18,8 +18,8 @@ def test_panels_follow_available_providers(window):
     win = window
     win.config.providers["anthropic"]["api_key"] = "sk-test"
     win.config.save()
-    proj = win.config.add_project("Demo", "/tmp/demo-x", "o/r",
-                                  "https://github.com/o/r.git", "main", "")
+    win.config.add_project("Demo", "/tmp/demo-x", "o/r",
+                           "https://github.com/o/r.git", "main", "")
     win._refresh_projects()
     assert win.project_name.text() == "Demo"
     # available = has credentials: anthropic (key) + local (auth=none). Not openai/xai.
