@@ -186,6 +186,15 @@ class SettingsDialog(QDialog):
         self.require_verification.setChecked(o.get("require_verification", True))
         orch_form.addRow(self.require_verification)
 
+        self.budget_usd = QDoubleSpinBox()
+        self.budget_usd.setRange(0.0, 10000.0)
+        self.budget_usd.setDecimals(2)
+        self.budget_usd.setSingleStep(0.5)
+        self.budget_usd.setValue(float(o.get("budget_usd", 0.0)))
+        self.budget_usd.setToolTip("0 = без ограничения. При достижении лимита "
+                                   "агенты плавно останавливаются.")
+        orch_form.addRow("Бюджет прогона, $", self.budget_usd)
+
         self.auto_push = QCheckBox("Автоматически пушить (не рекомендуется)")
         self.auto_push.setChecked(o.get("auto_push", False))
         orch_form.addRow(self.auto_push)
@@ -243,6 +252,7 @@ class SettingsDialog(QDialog):
             "sandbox_mode": self.sandbox_mode.currentData(),
             "allow_network": self.allow_network.isChecked(),
             "require_verification": self.require_verification.isChecked(),
+            "budget_usd": self.budget_usd.value(),
             "auto_push": self.auto_push.isChecked(),
             "max_tool_iterations": self.max_iters.value(),
             "commit_prefix": self.commit_prefix.text(),

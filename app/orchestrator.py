@@ -29,6 +29,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from .budget import BudgetGuard
 from .domain import RunState
 from .persistence import RunStore
 from .providers import Steering, Usage, make_adapter, run_agent
@@ -134,6 +135,9 @@ class Orchestrator(QThread):
         self.disabled: set[str] = set()
         self.live_ids: set[str] = set()
         self.rw: RunWorkspaces | None = None
+        self.budget = BudgetGuard(self.orch.get("budget_usd", 0.0),
+                                  self.orch.get("budget_warn_ratio", 0.8))
+        self.budget_event = threading.Event()
         self._decision = threading.Event()
         self._decision_value: dict = {}
         self._report = ""
@@ -193,7 +197,27 @@ class Orchestrator(QThread):
 
     # ---- helpers ----------------------------------------------------
     def _emit_agent(self, pid: str):
-        return lambda kind, payload: self.agent_event.emit(pid, kind, payload)
+        cfg = self._cfg(pid)
+
+        def cb(kind: str, payload: str) -> None:
+            if kind == "usage":
+                try:
+                    d = json.loads(payload)
+                    cost = (d.get("in", 0) / 1e6 * cfg.get("price_in", 0)
+                            + d.get("out", 0) / 1e6 * cfg.get("price_out", 0))
+                    self.budget.add(cost)
+                    if self.budget.should_warn():
+                        self.log.emit(f"⚠ Израсходовано ~{self.budget.warn_ratio*100:.0f}% "
+                                      f"бюджета (${self.budget.total:.4f} из ${self.budget.cap:.2f})")
+                    if self.budget.exceeded() and not self.budget_event.is_set():
+                        self.budget_event.set()
+                        self.log.emit(f"⛔ Достигнут бюджет ${self.budget.cap:.2f} — "
+                                      "плавно останавливаю агентов")
+                except Exception:
+                    pass
+            self.agent_event.emit(pid, kind, payload)
+
+        return cb
 
     def _cfg(self, pid: str) -> dict:
         return next((p for p in self.providers if p["id"] == pid), {"id": pid})
@@ -259,10 +283,16 @@ class Orchestrator(QThread):
 
         context = build_context(root)
         implementers, reviewer = self._select_team()
+        max_iters = int(self.orch.get("max_tool_iterations", 14))
+        cap = self.budget.cap
         self.log.emit(
             f"Режим: {self.orch.get('execution_mode', 'pair')} · "
             f"исполнители: {', '.join(p['short'] for p in implementers)}"
             + (f" · ревьюер: {reviewer['short']}" if reviewer else ""))
+        # Forecast before the run starts (worst-case model calls + budget).
+        self.log.emit(
+            f"Прогноз: до ~{len(implementers) * max_iters} вызовов моделей · "
+            f"бюджет: {('$' + format(cap, '.2f')) if cap > 0 else 'без ограничения'}")
 
         self._ck(RunState.PLANNING)
         assignments = self._plan(context, implementers)
@@ -445,7 +475,7 @@ class Orchestrator(QThread):
         pid = provider["id"]
         on_event = self._emit_agent(pid)
         on_event("status", "работает")
-        combined = _Cancel(self.cancel_event, self.agent_cancels[pid])
+        combined = _Cancel(self.cancel_event, self.agent_cancels[pid], self.budget_event)
         sandbox = make_sandbox(self.orch.get("sandbox_mode", "restricted"),
                                str(ws.path),
                                allow_network=self.orch.get("allow_network", False))
@@ -529,8 +559,11 @@ class Orchestrator(QThread):
                            for c in verification.checks) or "- (проверок нет)"
         conflicts = "\n".join(f"- {c['provider']}: {c['message']}"
                               for c in integ["conflicts"]) or "- нет"
+        budget_note = ("\n> ⚠ Прогон был плавно остановлен по достижении бюджета "
+                       f"${self.budget.cap:.2f} (израсходовано ${self.budget.total:.4f}).\n"
+                       if self.budget_event.is_set() else "")
         base = (
-            f"# Отчёт по задаче\n\n**Задача:** {self.instruction}\n\n"
+            f"# Отчёт по задаче\n\n**Задача:** {self.instruction}\n{budget_note}\n"
             f"## Что сделали исполнители\n{agent_parts}\n\n"
             f"## Ревью\n{review_notes or '(без ревью)'}\n\n"
             f"## Интеграция\nИзменённые файлы: "

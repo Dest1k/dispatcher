@@ -144,6 +144,8 @@ def _default_config() -> dict[str, Any]:
             "publish_default": "integration_branch",  # never the target branch
             "require_verification": True,
             "max_tool_iterations": 14,          # safer adaptive default
+            "budget_usd": 0.0,                   # 0 = no hard cap
+            "budget_warn_ratio": 0.8,
             "commit_prefix": "",
             "sandbox_mode": "restricted",       # restricted | docker | unsafe_local
             "allow_network": False,
