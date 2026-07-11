@@ -1,95 +1,163 @@
-"""Configuration & persistence.
+"""Configuration, provider profiles & persistence.
 
-Settings and projects are stored as a single plain-JSON file under the user's
-home directory. No encryption (by explicit user choice) — the file lives in the
-user profile and is only readable by the OS account that owns it.
+Design points for the production redesign:
+  * Provider profiles are a *dynamic* dict (not exactly three). Each profile
+    declares transport, auth and billing_source so subscription-backed,
+    direct-API and local backends are represented distinctly.
+  * Secrets (api keys, github tokens) are never written to the plaintext config;
+    they live in the OS secret store and only a reference is persisted.
+    Legacy plaintext secrets are migrated on first save.
 """
 from __future__ import annotations
 
 import copy
 import json
-import os
 import uuid
 from pathlib import Path
 from typing import Any
 
+from .security import register_secret, secret_store
+
 CONFIG_DIR = Path.home() / ".multi_ai_control_center"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
+# Transports (behind adapters). subscription_agent is a capability-gated
+# boundary for official subscription-backed coding agents (Codex / Claude Agent
+# SDK / xAI) — see PROVIDERS.md; currently marked unavailable.
+TRANSPORT_ANTHROPIC = "anthropic_messages"
+TRANSPORT_OPENAI = "openai_chat"
+TRANSPORT_LOCAL = "openai_compatible_local"
+TRANSPORT_SUBSCRIPTION = "subscription_agent"
 
-# --- Default "fattest" presets for the three smartest models on the planet ---
+# Billing sources — kept distinct from API rate limits and financial budget.
+BILLING_API = "api"
+BILLING_SUBSCRIPTION = "subscription"
+BILLING_LOCAL = "local"
+
+# Secret-bearing fields, resolved from refs at load and stripped at save.
+_PROVIDER_SECRET = "api_key"
+_PROJECT_SECRET = "github_token"
+
+
+def _seed_providers() -> dict[str, Any]:
+    return {
+        "anthropic": {
+            "id": "anthropic",
+            "kind": "anthropic",
+            "transport": TRANSPORT_ANTHROPIC,
+            "auth": "api_key",
+            "billing_source": BILLING_API,
+            "subscription_tier": "",
+            "quota_source": "api_headers",
+            "label": "Claude Opus 4.8",
+            "short": "Claude",
+            "enabled": True,
+            "api_key": "",
+            "model": "claude-opus-4-8",
+            "effort": "high",
+            "base_url": "https://api.anthropic.com/v1",
+            "max_tokens": 16000,
+            "price_in": 5.0,
+            "price_out": 25.0,
+            "effort_options": ["low", "medium", "high", "xhigh", "max"],
+            "accent": "#d97757",
+            "strength": "архитектура, сложная логика, ревью и интеграция результатов",
+        },
+        "openai": {
+            "id": "openai",
+            "kind": "openai",
+            "transport": TRANSPORT_OPENAI,
+            "auth": "api_key",
+            "billing_source": BILLING_API,
+            "subscription_tier": "",
+            "quota_source": "api_headers",
+            "label": "ChatGPT 5.6",
+            "short": "ChatGPT",
+            "enabled": True,
+            "api_key": "",
+            "model": "gpt-5.6",
+            "effort": "high",
+            "base_url": "https://api.openai.com/v1",
+            "max_tokens": 16000,
+            "price_in": 5.0,
+            "price_out": 15.0,
+            "effort_options": ["minimal", "low", "medium", "high"],
+            "accent": "#10a37f",
+            "strength": "реализация фич, алгоритмы, аккуратный код и тесты",
+        },
+        "xai": {
+            "id": "xai",
+            "kind": "openai",
+            "transport": TRANSPORT_OPENAI,
+            "auth": "api_key",
+            "billing_source": BILLING_SUBSCRIPTION,
+            "subscription_tier": "SuperGrok",
+            "quota_source": "not_exposed",
+            "label": "Grok 4.5 · SuperGrok",
+            "short": "Grok",
+            "enabled": True,
+            "api_key": "",
+            "model": "grok-4.5",
+            "effort": "high",
+            "base_url": "https://api.x.ai/v1",
+            "max_tokens": 16000,
+            "price_in": 5.0,
+            "price_out": 15.0,
+            "effort_options": ["low", "medium", "high"],
+            "accent": "#6366f1",
+            "strength": "инфраструктура, интеграции, документация и данные",
+        },
+        "local": {
+            "id": "local",
+            "kind": "openai",
+            "transport": TRANSPORT_LOCAL,
+            "auth": "none",
+            "billing_source": BILLING_LOCAL,
+            "subscription_tier": "",
+            "quota_source": "local",
+            "label": "Local model · vLLM",
+            "short": "Local",
+            "enabled": False,
+            "api_key": "",
+            "model": "your-local-model",
+            "effort": "none",
+            "base_url": "http://localhost:8000/v1",
+            "max_tokens": 8000,
+            "price_in": 0.0,
+            "price_out": 0.0,
+            "effort_options": ["none", "low", "medium", "high"],
+            "accent": "#3fb950",
+            "strength": "индексация репозитория, суммаризация, дешёвая предобработка",
+        },
+    }
+
+
 def _default_config() -> dict[str, Any]:
     return {
-        "providers": {
-            "anthropic": {
-                "id": "anthropic",
-                "kind": "anthropic",
-                "label": "Claude Opus 4.8 · Ultracode",
-                "short": "Claude",
-                "enabled": True,
-                "api_key": "",
-                "model": "claude-opus-4-8",
-                "effort": "max",
-                "base_url": "https://api.anthropic.com/v1",
-                "max_tokens": 16000,
-                "price_in": 5.0,
-                "price_out": 25.0,
-                "effort_options": ["low", "medium", "high", "xhigh", "max"],
-                "accent": "#d97757",
-                "strength": "архитектура, сложная логика, ревью и интеграция результатов",
-            },
-            "openai": {
-                "id": "openai",
-                "kind": "openai",
-                "label": "ChatGPT 5.6 · Sol Ultra",
-                "short": "ChatGPT",
-                "enabled": True,
-                "api_key": "",
-                "model": "gpt-5.6",
-                "effort": "high",
-                "base_url": "https://api.openai.com/v1",
-                "max_tokens": 16000,
-                "price_in": 5.0,
-                "price_out": 15.0,
-                "effort_options": ["minimal", "low", "medium", "high"],
-                "accent": "#10a37f",
-                "strength": "реализация фич, алгоритмы, аккуратный код и тесты",
-            },
-            "xai": {
-                "id": "xai",
-                "kind": "openai",
-                "label": "Grok 4.5 · Max",
-                "short": "Grok",
-                "enabled": True,
-                "api_key": "",
-                "model": "grok-4.5",
-                "effort": "high",
-                "base_url": "https://api.x.ai/v1",
-                "max_tokens": 16000,
-                "price_in": 5.0,
-                "price_out": 15.0,
-                "effort_options": ["low", "medium", "high"],
-                "accent": "#6366f1",
-                "strength": "инфраструктура, интеграции, документация и данные",
-            },
-        },
+        "providers": _seed_providers(),
+        "provider_order": ["anthropic", "openai", "xai", "local"],
         "orchestration": {
-            "mode": "lead",              # 'lead' = Claude раздаёт роли; 'auto' = каждый сам
+            "mode": "lead",
             "lead_provider": "anthropic",
-            "auto_push": True,
-            "max_tool_iterations": 24,
+            "execution_mode": "pair",          # solo | pair | adaptive | full_council
+            "auto_push": False,                # SAFETY: never push automatically
+            "publish_default": "integration_branch",  # never the target branch
+            "require_verification": True,
+            "max_tool_iterations": 14,          # safer adaptive default
             "commit_prefix": "",
+            "sandbox_mode": "restricted",       # restricted | docker | unsafe_local
+            "allow_network": False,
         },
         "projects": [],
         "active_project": None,
     }
 
 
-PROVIDER_ORDER = ["anthropic", "openai", "xai"]
+# Seed order used only for building defaults; the live order is dynamic.
+PROVIDER_ORDER = ["anthropic", "openai", "xai", "local"]
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
-    """Merge saved config on top of defaults so new keys always appear."""
     out = copy.deepcopy(base)
     for key, value in override.items():
         if key in out and isinstance(out[key], dict) and isinstance(value, dict):
@@ -100,10 +168,9 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 class Config:
-    """In-memory config with load/save helpers."""
-
     def __init__(self, data: dict[str, Any]):
         self.data = data
+        self.migrated_secrets = False
 
     # ---- persistence -------------------------------------------------
     @classmethod
@@ -113,44 +180,101 @@ class Config:
             try:
                 saved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
                 merged = _deep_merge(defaults, saved)
-                # provider dicts: merge each so new fields (like effort_options) survive
-                for pid, pdefault in defaults["providers"].items():
+                seed = _seed_providers()
+                for pid, pdefault in seed.items():
                     if pid in saved.get("providers", {}):
                         merged["providers"][pid] = _deep_merge(
-                            pdefault, saved["providers"][pid]
-                        )
-                return cls(merged)
+                            pdefault, saved["providers"][pid])
+                cfg = cls(merged)
+                cfg._resolve_secrets()
+                return cfg
             except (json.JSONDecodeError, OSError):
                 pass
         return cls(defaults)
 
+    def _resolve_secrets(self) -> None:
+        """Pull secret values out of the OS store into memory; migrate legacy."""
+        for provider in self.providers.values():
+            self._resolve_field(provider, _PROVIDER_SECRET,
+                                 f"provider:{provider.get('id')}:{_PROVIDER_SECRET}")
+        for project in self.projects:
+            self._resolve_field(project, _PROJECT_SECRET,
+                                 f"project:{project.get('id')}:{_PROJECT_SECRET}")
+
+    def _resolve_field(self, obj: dict, field: str, account: str) -> None:
+        ref = obj.get(f"{field}_ref")
+        legacy = obj.get(field)
+        if ref:
+            value = secret_store.get(ref) or ""
+            obj[field] = value
+            register_secret(value)
+        elif legacy:
+            # Legacy plaintext secret in an old config -> migrate on next save.
+            self.migrated_secrets = True
+            register_secret(legacy)
+
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        # Persist a copy with secrets replaced by references.
+        persisted = copy.deepcopy(self.data)
+        for pid, provider in self.providers.items():
+            self._persist_field(provider, persisted["providers"][pid],
+                                 _PROVIDER_SECRET,
+                                 f"provider:{pid}:{_PROVIDER_SECRET}")
+        for i, project in enumerate(self.projects):
+            self._persist_field(project, persisted["projects"][i],
+                                 _PROJECT_SECRET,
+                                 f"project:{project['id']}:{_PROJECT_SECRET}")
         CONFIG_PATH.write_text(
-            json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+            json.dumps(persisted, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def _persist_field(self, live: dict, persisted: dict, field: str,
+                        account: str) -> None:
+        value = live.get(field, "")
+        persisted.pop(field, None)          # never write the plaintext secret
+        if value:
+            ref = secret_store.set(account, value)
+            live[f"{field}_ref"] = ref
+            persisted[f"{field}_ref"] = ref
+            register_secret(value)
+        else:
+            secret_store.delete(live.get(f"{field}_ref"))
+            live.pop(f"{field}_ref", None)
+            persisted.pop(f"{field}_ref", None)
 
     # ---- providers ---------------------------------------------------
     @property
     def providers(self) -> dict[str, dict]:
         return self.data["providers"]
 
+    def provider_order(self) -> list[str]:
+        order = self.data.get("provider_order") or []
+        # keep any providers not listed in the order at the end
+        return order + [pid for pid in self.providers if pid not in order]
+
     def ordered_providers(self) -> list[dict]:
-        return [self.providers[pid] for pid in PROVIDER_ORDER if pid in self.providers]
+        return [self.providers[pid] for pid in self.provider_order()
+                if pid in self.providers]
 
     def active_providers(self) -> list[dict]:
-        """Providers that are enabled AND have an API key (start of a run)."""
-        return [
-            p for p in self.ordered_providers()
-            if p.get("enabled") and p.get("api_key", "").strip()
-        ]
+        return [p for p in self.ordered_providers() if _is_active(p)]
 
     def available_providers(self) -> list[dict]:
-        """Providers that merely have an API key — can be toggled in/out live."""
-        return [
-            p for p in self.ordered_providers()
-            if p.get("api_key", "").strip()
-        ]
+        return [p for p in self.ordered_providers() if _has_credentials(p)]
+
+    def add_provider(self, profile: dict) -> None:
+        pid = profile["id"]
+        self.providers[pid] = profile
+        order = self.data.setdefault("provider_order", [])
+        if pid not in order:
+            order.append(pid)
+        self.save()
+
+    def remove_provider(self, pid: str) -> None:
+        self.providers.pop(pid, None)
+        if pid in self.data.get("provider_order", []):
+            self.data["provider_order"].remove(pid)
+        self.save()
 
     @property
     def orchestration(self) -> dict:
@@ -174,6 +298,7 @@ class Config:
             "github_url": github_url,
             "branch": branch or "main",
             "github_token": github_token,
+            "verify_commands": [],
             "chat": [],
             "runs": [],
         }
@@ -192,8 +317,7 @@ class Config:
         self.data["projects"] = [p for p in self.projects if p["id"] != project_id]
         if self.data.get("active_project") == project_id:
             self.data["active_project"] = (
-                self.projects[0]["id"] if self.projects else None
-            )
+                self.projects[0]["id"] if self.projects else None)
         self.save()
 
     def add_chat_message(self, project_id: str, role: str, text: str,
@@ -204,3 +328,13 @@ class Config:
             project.setdefault("chat", []).append(msg)
             self.save()
         return msg
+
+
+def _has_credentials(p: dict) -> bool:
+    if p.get("auth") == "none":
+        return bool(p.get("base_url"))
+    return bool(p.get("api_key", "").strip())
+
+
+def _is_active(p: dict) -> bool:
+    return bool(p.get("enabled")) and _has_credentials(p)

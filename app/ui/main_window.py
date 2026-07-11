@@ -60,7 +60,8 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage("Готов")
         self._refresh_projects()
-        self._check_limits()   # populate the per-model limit badges on startup
+        # No automatic paid ping on startup (see SECURITY.md / brief §8).
+        # Rate-limit badges fill from real responses during a run, or on demand.
 
     # ================= sidebar =================
     def _build_sidebar(self) -> QWidget:
@@ -161,8 +162,11 @@ class MainWindow(QMainWindow):
         self.usage_label = QLabel("")
         self.usage_label.setObjectName("Meta")
         top.addWidget(self.usage_label)
-        self.limits_btn = QPushButton("↻ Обновить лимиты")
+        self.limits_btn = QPushButton("↻ Лимиты (платный запрос)")
         self.limits_btn.setObjectName("Ghost")
+        self.limits_btn.setToolTip(
+            "Обновление лимитов делает по одному минимальному запросу к каждому "
+            "провайдеру — он тарифицируется как обычный запрос.")
         self.limits_btn.clicked.connect(self._check_limits)
         top.addWidget(self.limits_btn)
         v.addLayout(top)
@@ -312,7 +316,6 @@ class MainWindow(QMainWindow):
             self.mode_combo.setCurrentIndex(
                 0 if self.config.orchestration.get("mode") == "lead" else 1)
             self._rebuild_agent_panels()
-            self._check_limits()
             self.statusBar().showMessage("Настройки сохранены")
 
     def _on_mode_changed(self) -> None:

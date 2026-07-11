@@ -1,0 +1,41 @@
+"""Headless (offscreen) UI construction — no network, no real config writes."""
+import pytest
+
+
+@pytest.fixture
+def window(qapp, tmp_config):
+    from app.ui.main_window import MainWindow
+    win = MainWindow()
+    yield win
+    win.close()
+
+
+def test_window_builds_empty(window):
+    assert window.project_name.text() == "Нет проекта"
+
+
+def test_panels_follow_available_providers(window):
+    win = window
+    win.config.providers["anthropic"]["api_key"] = "sk-test"
+    win.config.save()
+    proj = win.config.add_project("Demo", "/tmp/demo-x", "o/r",
+                                  "https://github.com/o/r.git", "main", "")
+    win._refresh_projects()
+    assert win.project_name.text() == "Demo"
+    # available = has credentials: anthropic (key) + local (auth=none). Not openai/xai.
+    assert set(win.agent_panels.keys()) == {"anthropic", "local"}
+
+
+def test_settings_dialog_dynamic_tabs(qapp, tmp_config):
+    from app.config import Config, _default_config
+    from app.ui.settings_dialog import SettingsDialog
+    cfg = Config(_default_config())
+    dlg = SettingsDialog(cfg)
+    # one tab per provider + the orchestration tab
+    assert dlg.tabs.count() == len(cfg.ordered_providers()) + 1
+    dlg.close()
+
+
+def test_no_autoping_on_startup(window, monkeypatch):
+    # Constructing the window must not have started a LimitsChecker (no paid ping).
+    assert window._limits_checker is None

@@ -138,8 +138,20 @@ def test_git_commit_and_diff(has_git, git_repo):
 # ---- config ----------------------------------------------------------
 def test_config_defaults(tmp_config):
     cfg = Config(_default_config())
-    assert len(cfg.ordered_providers()) == 3
+    # Dynamic provider list (not hardcoded to three): 4 seeded profiles.
+    assert len(cfg.ordered_providers()) == 4
+    # No API keys yet; the local (auth=none) profile counts as available.
     assert len(cfg.active_providers()) == 0
+    assert {p["id"] for p in cfg.available_providers()} == {"local"}
     cfg.providers["anthropic"]["api_key"] = "k"
-    assert len(cfg.available_providers()) == 1
-    assert len(cfg.active_providers()) == 1
+    assert {p["id"] for p in cfg.available_providers()} == {"anthropic", "local"}
+    assert [p["id"] for p in cfg.active_providers()] == ["anthropic"]
+
+
+def test_provider_billing_model(tmp_config):
+    cfg = Config(_default_config())
+    assert cfg.providers["xai"]["billing_source"] == "subscription"
+    assert cfg.providers["xai"]["subscription_tier"] == "SuperGrok"
+    assert cfg.providers["local"]["billing_source"] == "local"
+    assert cfg.providers["anthropic"]["billing_source"] == "api"
+    assert cfg.orchestration["auto_push"] is False
