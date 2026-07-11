@@ -34,10 +34,12 @@ ownership zone and re-planning, so the model participates from the next task).
 ## Phase 4 — Providers & auth ◐
 Done: dynamic registry, transport/auth/billing model, direct-API + local
 (vLLM) adapters, capability-gated `subscription_agent` boundary (unavailable),
-transient retry/backoff (Retry-After), per-run budget enforcement + forecast.
-Planned: official subscription-agent adapters where supported; Responses-API
-adapters; streaming + provider-native cancellation; a versioned, source-dated
-model capability catalog; Docker container-per-agent for the implementation step.
+transient retry/backoff (Retry-After), per-run budget enforcement + forecast,
+SSE streaming for **both** OpenAI-compatible and Anthropic adapters (text
+deltas; tool-use/thinking round-trip; cancel closes the connection), versioned
+source-dated model capability catalog. Planned: official subscription-agent
+adapters where supported; Responses-API adapters; Docker container-per-agent for
+the implementation step.
 
 ## Phase 5 — UI & publication ◐
 Done: approval dialog with full diff + verification evidence; billing/limit
