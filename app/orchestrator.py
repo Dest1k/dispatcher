@@ -34,7 +34,7 @@ from .domain import RunState
 from .persistence import RunStore
 from .providers import Steering, Usage, make_adapter, run_agent
 from .providers.base import Message
-from .security import redact
+from .security import redact, register_secret
 from .sandbox import make_sandbox
 from .tools import TOOL_SPECS, ProjectTools
 from .verification import detect_commands, run_verification
@@ -655,8 +655,12 @@ class Orchestrator(QThread):
                                      f"{self.rw.integration_branch}. Пуш отменён: "
                                      "верификация не пройдена.")
             elif push:
-                self.rw.push_integration(self.project.get("github_url", ""),
-                                         self.project.get("github_token", ""))
+                token = self.project.get("github_token", "")
+                if token:
+                    # Defense-in-depth: ensure the redactor masks the token even
+                    # if git echoes the authenticated remote URL on a push error.
+                    register_secret(token)
+                self.rw.push_integration(self.project.get("github_url", ""), token)
                 result["pushed"] = True
                 pr_url = _compare_url(self.project.get("github_repo", ""),
                                       self.rw.integration_branch)
@@ -670,7 +674,10 @@ class Orchestrator(QThread):
                                      f"{self.rw.integration_branch}. Пуш не запрашивался.")
         except Exception as exc:
             result["status"] = "partial"
-            result["message"] = f"Работа выполнена, но git-операция не удалась: {exc}"
+            # redact: git can echo the authenticated remote URL (with token) on
+            # a push failure — never surface or persist that verbatim.
+            result["message"] = redact(
+                f"Работа выполнена, но git-операция не удалась: {exc}")
         # keep the integration branch (published), drop agent temp branches + worktrees
         self.rw.cleanup(keep=[self.rw.integration_branch])
         state = RunState.PARTIAL if result["status"] == "partial" else RunState.COMPLETED
