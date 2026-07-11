@@ -14,6 +14,7 @@ from ..config import Config
 from ..orchestrator import Orchestrator
 from ..providers import make_adapter
 from .agent_panel import AgentPanel
+from .approval_dialog import ApprovalDialog
 from .chat_view import ChatView
 from .project_dialog import ProjectDialog
 from .settings_dialog import SettingsDialog
@@ -46,6 +47,7 @@ class MainWindow(QMainWindow):
         self.agent_panels: dict[str, AgentPanel] = {}
         self.live_usage: dict[str, dict] = {}
         self._limits_checker: LimitsChecker | None = None
+        self._last_diff: str = ""
 
         self.setWindowTitle("Multi-AI Control Center — Claude · ChatGPT · Grok")
         self.resize(1360, 860)
@@ -443,6 +445,9 @@ class MainWindow(QMainWindow):
         orc.agent_role.connect(self._on_agent_role)
         orc.agent_event.connect(self._on_agent_event)
         orc.log.connect(self._on_log)
+        orc.integration_ready.connect(self._on_integration_ready)
+        orc.verification_ready.connect(self._on_verification_ready)
+        orc.awaiting_approval.connect(self._on_awaiting_approval)
         orc.report_ready.connect(self._on_report_ready)
         orc.run_finished.connect(self._on_run_finished)
         orc.run_error.connect(self._on_run_error)
@@ -531,6 +536,37 @@ class MainWindow(QMainWindow):
 
     def _on_log(self, message: str) -> None:
         self.statusBar().showMessage(message)
+
+    def _on_integration_ready(self, integ: dict) -> None:
+        self._last_diff = integ.get("diff", "")
+        files = integ.get("changed_files", [])
+        conflicts = integ.get("conflicts", [])
+        msg = f"Интеграция: {len(files)} файлов изменено"
+        if conflicts:
+            msg += f", конфликтов: {len(conflicts)}"
+        self._on_log(msg)
+
+    def _on_verification_ready(self, verification: dict) -> None:
+        status = verification.get("status", "unknown")
+        checks = verification.get("checks", [])
+        summary = "  ·  ".join(f"{c['name']}: {c['status']}" for c in checks) or "нет проверок"
+        text = f"**Верификация: {status}**  \n{summary}"
+        self.chat.add_message("system", text)
+        if self.running_project_id:
+            self.config.add_chat_message(self.running_project_id, "system", text)
+
+    def _on_awaiting_approval(self, payload: dict) -> None:
+        dlg = ApprovalDialog(payload, self._last_diff, parent=self)
+        dlg.exec()
+        action, push = dlg.decision
+        if self.orchestrator is None:
+            return
+        if action == "approve":
+            self.orchestrator.approve(push)
+            self._on_log("Изменения одобрены" + (" и пушатся" if push else " (локально)"))
+        else:
+            self.orchestrator.reject()
+            self._on_log("Изменения отклонены — исходный репозиторий не тронут")
 
     def _on_report_ready(self, report: str, usage: dict) -> None:
         project = self._current_project()

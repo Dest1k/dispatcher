@@ -143,7 +143,9 @@ class AgentPanel(QWidget):
             self.set_status(payload)
             self._append(f'<span style="color:#8b949e">— {payload}</span>')
         elif kind == "thinking":
-            self._append(f'<span style="color:#8b949e"><i>💭 {_esc(payload)[:600]}</i></span>')
+            # Provider-supported reasoning *summary* — not raw chain-of-thought.
+            self._append(f'<span style="color:#8b949e"><i>💭 сводка рассуждений: '
+                         f'{_esc(payload)[:600]}</i></span>')
         elif kind == "text":
             self._append(f'<span style="color:#e6edf3">{_esc(payload)[:1200]}</span>')
         elif kind == "tool":

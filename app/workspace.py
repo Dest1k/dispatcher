@@ -176,15 +176,34 @@ class RunWorkspaces:
         return _git(["rev-parse", "--short", "HEAD"], str(self.integration_path))
 
     # ---- cleanup ----------------------------------------------------
-    def cleanup(self, keep_branches: bool = False) -> None:
-        """Remove worktrees + temporary branches. Never touches user branches."""
+    def push_integration(self, github_url: str = "", token: str = "") -> str:
+        """Push ONLY the integration branch (never the target branch)."""
+        remote = _authed_remote(github_url, token) if (github_url and token) else "origin"
+        return _git(["push", remote, f"HEAD:{self.integration_branch}"],
+                    str(self.integration_path), timeout=600)
+
+    def cleanup(self, keep: list[str] | None = None) -> None:
+        """Remove worktrees + temporary branches. Never touches user branches.
+
+        Branches in `keep` (e.g. a published integration branch) are preserved.
+        """
+        keep = keep or []
         for ws in self.agents.values():
             _git_ok(["worktree", "remove", "--force", str(ws.path)], self.repo_root)
         if self.integration_path is not None:
             _git_ok(["worktree", "remove", "--force", str(self.integration_path)],
                     self.repo_root)
         _git_ok(["worktree", "prune"], self.repo_root)
-        if not keep_branches:
-            for branch in self._created_branches:
+        for branch in self._created_branches:
+            if branch not in keep:
                 _git_ok(["branch", "-D", branch], self.repo_root)
         shutil.rmtree(self.run_dir, ignore_errors=True)
+
+
+def _authed_remote(github_url: str, token: str) -> str:
+    from urllib.parse import urlparse, urlunparse
+    parsed = urlparse(github_url)
+    netloc = f"x-access-token:{token}@{parsed.hostname}"
+    if parsed.port:
+        netloc += f":{parsed.port}"
+    return urlunparse(parsed._replace(netloc=netloc))

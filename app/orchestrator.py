@@ -1,18 +1,22 @@
-"""The orchestration engine.
+"""Run controller.
 
-Flow for one task:
-  1. Build a snapshot of the project (file tree).
-  2. LEAD mode: the lead model (Claude by default) splits the work ~evenly
-     across the available models, assigning a role and a non-overlapping set of
-     files to each. AUTO mode: every model gets the whole task and coordinates
-     loosely.
-  3. All models run concurrently as tool-using agents inside the local repo.
-  4. The lead composes a single Markdown report from everyone's summaries + the
-     git diff.
-  5. Commit everything and push to the project's branch.
+Safe flow for one task:
+  1. Record base commit; refuse to run on a dirty source tree by default.
+  2. Select a team by execution mode (solo / pair / full_council); plan.
+  3. Each implementer works in its OWN git worktree (never the source tree),
+     with file ownership enforced by a PathPolicy and commands run in a sandbox
+     (no secrets, killable).
+  4. Collect each agent's patch; apply patches sequentially into an integration
+     worktree (explicit staging, no `git add -A`, no branch reset).
+  5. Optional cross-review of the integrated diff.
+  6. Deterministic verification (real commands, exit codes).
+  7. Emit report + diff + verification evidence and WAIT for human approval.
+     Nothing is committed or pushed automatically. Failed/unknown/cancelled
+     verification blocks publication. On approval, commit the integration branch
+     and (only if asked and allowed) push that branch — never the target branch.
 
-Runs on its own QThread; progress is streamed to the UI via signals. Mid-run
-user instructions are broadcast to every running agent via a Steering queue.
+Runs on its own QThread; the source repository is fully recoverable after any
+cancelled or failed run.
 """
 from __future__ import annotations
 
@@ -25,31 +29,22 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from . import git_service
 from .providers import Steering, Usage, make_adapter, run_agent
 from .providers.base import Message
+from .sandbox import make_sandbox
 from .tools import TOOL_SPECS, ProjectTools
+from .verification import detect_commands, run_verification
+from .workspace import RunWorkspaces, WorkspaceError
 
 _IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
                  "build", ".mypy_cache", ".pytest_cache", ".idea", ".vscode"}
 
-
-class _Cancel:
-    """A cancel view that is set if the global stop OR this agent's stop fires."""
-
-    def __init__(self, *events):
-        self._events = events
-
-    def is_set(self) -> bool:
-        return any(e.is_set() for e in self._events)
+# Files an agent must never read or write, regardless of assignment.
+SECRET_DENY = [".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*",
+               "secrets/*", ".ssh/*", ".git/*", ".aws/*", "*.p12"]
 
 
 def build_context(root: str, max_entries: int = 220) -> str:
-    """A compact, cheap file listing so models understand the project layout.
-
-    Uses os.walk with in-place pruning of ignored directories so huge trees
-    (node_modules, .git, …) are never traversed.
-    """
     if not Path(root).exists():
         return "(локальная папка не найдена)"
     files: list[str] = []
@@ -79,12 +74,10 @@ def build_context(root: str, max_entries: int = 220) -> str:
 
 
 def _extract_json(text: str) -> dict | None:
-    """Robustly pull a JSON object out of a model response."""
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     candidate = fenced.group(1) if fenced else None
     if candidate is None:
-        start = text.find("{")
-        end = text.rfind("}")
+        start, end = text.find("{"), text.rfind("}")
         if start != -1 and end > start:
             candidate = text[start:end + 1]
     if candidate is None:
@@ -95,13 +88,24 @@ def _extract_json(text: str) -> dict | None:
         return None
 
 
+class _Cancel:
+    def __init__(self, *events):
+        self._events = events
+
+    def is_set(self) -> bool:
+        return any(e.is_set() for e in self._events)
+
+
 class Orchestrator(QThread):
     plan_ready = Signal(dict)
-    agent_role = Signal(str, dict)             # provider_id, {title, role}
-    agent_event = Signal(str, str, str)        # provider_id, kind, payload
+    agent_role = Signal(str, dict)
+    agent_event = Signal(str, str, str)
     log = Signal(str)
-    report_ready = Signal(str, dict)           # markdown report, usage summary
-    run_finished = Signal(dict)                # {status, branch, commit, pushed, message}
+    integration_ready = Signal(dict)      # {changed_files, conflicts, diff}
+    verification_ready = Signal(dict)     # VerificationResult.to_dict()
+    report_ready = Signal(str, dict)      # report md, usage
+    awaiting_approval = Signal(dict)      # {status, can_autopublish, ...}
+    run_finished = Signal(dict)
     run_error = Signal(str)
 
     def __init__(self, config, project: dict, instruction: str):
@@ -111,7 +115,6 @@ class Orchestrator(QThread):
         self.instruction = instruction
         self.steering = Steering()
         self.cancel_event = threading.Event()
-        # snapshot providers so a settings change mid-run can't corrupt the run
         self.providers = [dict(p) for p in config.active_providers()]
         self.orch = dict(config.orchestration)
         self._usage: dict[str, Usage] = {}
@@ -119,324 +122,292 @@ class Orchestrator(QThread):
         self.assignments: dict[str, dict] = {}
         self.disabled: set[str] = set()
         self.live_ids: set[str] = set()
-        # populated during the agent phase, used for hot add/remove
-        self._context = ""
-        self._summaries: dict[str, str] = {}
-        self._max_iters = 24
-        self._agent_threads: list[threading.Thread] = []
-        self._agents_lock = threading.Lock()
-        self._agents_phase = False
+        self.rw: RunWorkspaces | None = None
+        self._decision = threading.Event()
+        self._decision_value: dict = {}
+        self._report = ""
+        self._verification: dict = {}
+        self._published_branch: str | None = None
 
     # ---- external controls ------------------------------------------
     def add_steering(self, text: str) -> None:
         self.steering.add(text)
-        self.log.emit("→ Инструкция отправлена работающим ИИ")
+        self.log.emit("→ Инструкция отправлена работающим агентам")
 
     def cancel(self) -> None:
         self.cancel_event.set()
         for ev in self.agent_cancels.values():
             ev.set()
+        self._decision_value = {"action": "reject"}
+        self._decision.set()
         self.log.emit("⏹ Останавливаю работу…")
 
     def disable_agent(self, provider_id: str) -> None:
-        """Turn off one model mid-run; the rest take over its work."""
-        with self._agents_lock:
-            if provider_id in self.disabled or provider_id not in self.live_ids:
-                return
-            ev = self.agent_cancels.get(provider_id)
-            if ev is None:
-                return
-            self.disabled.add(provider_id)
-            self.live_ids.discard(provider_id)
-            ev.set()
+        if provider_id in self.disabled or provider_id not in self.live_ids:
+            return
+        ev = self.agent_cancels.get(provider_id)
+        if ev is None:
+            return
+        self.disabled.add(provider_id)
+        self.live_ids.discard(provider_id)
+        ev.set()
+        # Reassign to ONE designated agent (not a broadcast "everyone take over").
+        taker = next((pid for pid in self.live_ids), None)
+        prov = self._cfg(provider_id).get("short", provider_id)
+        if taker:
             assignment = self.assignments.get(provider_id, {})
-            provider = self._provider_cfg(provider_id)
-            remaining = [self._provider_cfg(pid).get("short", pid)
-                         for pid in self.live_ids]
-        files = ", ".join(assignment.get("files") or []) or "все её файлы"
-        objective = assignment.get("objective", "её часть задачи")
+            files = ", ".join(assignment.get("files") or []) or "её файлы"
+            taker_name = self._cfg(taker).get("short", taker)
+            self.steering.add(
+                f"Модель «{prov}» отключена. Её задачу ({assignment.get('objective','')}, "
+                f"файлы: {files}) берёт на себя ТОЛЬКО «{taker_name}». Остальные — не дублируйте.")
+            self.log.emit(f"⛔ {prov} отключён — задачу берёт {taker_name}")
+        else:
+            self.log.emit(f"⛔ {prov} отключён — других исполнителей нет")
         self.agent_event.emit(provider_id, "status", "отключён пользователем")
-        self.log.emit(f"⛔ {provider.get('short', provider_id)} отключён — "
-                      f"работу подхватывают: {', '.join(remaining) or 'никто'}")
-        # Broadcast the takeover to every still-running agent.
-        self.steering.add(
-            f"Модель «{provider.get('short', provider_id)}» отключена пользователем. "
-            f"Возьмите на себя её работу. Её подзадача: {objective}. "
-            f"Её файлы: {files}. Доведите эту часть до конца вместе со своей."
-        )
 
-    def add_agent(self, provider_cfg: dict) -> bool:
-        """Hot-join a model to the running council. Returns True if it joined."""
-        pid = provider_cfg["id"]
-        with self._agents_lock:
-            if not self._agents_phase:
-                return False
-            if pid in self.live_ids:
-                return False
-            self.disabled.discard(pid)
-            self.live_ids.add(pid)
-            if not any(p["id"] == pid for p in self.providers):
-                self.providers.append(dict(provider_cfg))
-            assignment = self.assignments.get(pid) or {
-                "provider": pid,
-                "role": provider_cfg.get("strength", ""),
-                "title": provider_cfg.get("short", pid),
-                "objective": self.instruction,
-                "files": [],
-            }
-            self.assignments[pid] = assignment
-            usage = self._usage.setdefault(pid, Usage())
-            joining_late = True
-            self._spawn_agent(provider_cfg, assignment, usage, joining_late)
-        provider = self._provider_cfg(pid)
-        self.log.emit(f"➕ {provider.get('short', pid)} подключился к консилиуму")
-        self.steering.add(
-            f"К работе подключилась модель «{provider.get('short', pid)}». "
-            "Скоординируйтесь, чтобы не дублировать усилия."
-        )
-        return True
+    def approve(self, push: bool = False) -> None:
+        self._decision_value = {"action": "approve", "push": push}
+        self._decision.set()
 
-    def _provider_cfg(self, pid: str) -> dict:
-        return next((p for p in self.providers if p["id"] == pid), {"id": pid})
-
-    def _spawn_agent(self, provider: dict, assignment: dict, usage: Usage,
-                     joining_late: bool = False) -> None:
-        """Create + start one agent thread. Caller holds _agents_lock."""
-        pid = provider["id"]
-        self.agent_role.emit(pid, assignment)
-        agent_cancel = threading.Event()
-        self.agent_cancels[pid] = agent_cancel
-        combined = _Cancel(self.cancel_event, agent_cancel)
-        thread = threading.Thread(
-            target=self._run_one_agent,
-            args=(provider, assignment, self._context, self._summaries, usage,
-                  self._max_iters, combined, joining_late),
-            daemon=True,
-        )
-        self._agent_threads.append(thread)
-        thread.start()
+    def reject(self) -> None:
+        self._decision_value = {"action": "reject"}
+        self._decision.set()
 
     # ---- helpers ----------------------------------------------------
-    def _emit_agent(self, provider_id: str):
-        def cb(kind: str, payload: str) -> None:
-            self.agent_event.emit(provider_id, kind, payload)
-        return cb
+    def _emit_agent(self, pid: str):
+        return lambda kind, payload: self.agent_event.emit(pid, kind, payload)
+
+    def _cfg(self, pid: str) -> dict:
+        return next((p for p in self.providers if p["id"] == pid), {"id": pid})
 
     def _lead_provider(self) -> dict:
         pref = self.orch.get("lead_provider", "anthropic")
-        for p in self.providers:
-            if p["id"] == pref:
-                return p
-        return self.providers[0]
+        return next((p for p in self.providers if p["id"] == pref), self.providers[0])
 
-    # ---- the run ----------------------------------------------------
-    def run(self) -> None:  # executes on the orchestrator thread
+    def _select_team(self):
+        mode = self.orch.get("execution_mode", "pair")
+        active = self.providers
+        lead = self._lead_provider()
+        ordered = [lead] + [p for p in active if p["id"] != lead["id"]]
+        if len(active) == 1 or mode == "solo":
+            return [ordered[0]], None
+        if mode == "full_council":
+            return active, lead
+        # pair / adaptive
+        return [ordered[0]], ordered[1]
+
+    # ---- run --------------------------------------------------------
+    def run(self) -> None:
         try:
             self._run_inner()
-        except Exception as exc:  # never let the thread die silently
+        except WorkspaceError as exc:
+            self.run_error.emit(f"Ошибка рабочей области: {exc}")
+            self._safe_cleanup()
+        except Exception as exc:
             self.run_error.emit(f"Сбой оркестратора: {exc}")
+            self._safe_cleanup()
 
     def _run_inner(self) -> None:
-        root = self.project["local_path"]
+        root = self.project.get("local_path", "")
         if not root or not Path(root).exists():
-            self.run_error.emit("Локальная папка проекта не найдена. Проверь путь или клонируй репозиторий.")
+            self.run_error.emit("Локальная папка проекта не найдена.")
             return
         if not self.providers:
-            self.run_error.emit("Не настроен ни один ИИ. Добавь API-ключи в настройках.")
+            self.run_error.emit("Не настроен ни один ИИ. Добавь API-ключи.")
+            return
+
+        self.rw = RunWorkspaces(root)
+        try:
+            info = self.rw.prepare()
+        except WorkspaceError as exc:
+            self.run_error.emit(
+                f"{exc}. Инициализируй git и сделай первый коммит, затем повтори.")
+            return
+        if info["dirty"]:
+            self.run_error.emit(
+                "В рабочем дереве есть незакоммиченные изменения. Закоммить или "
+                "убери их — Dispatcher не трогает и не коммитит чужие правки.")
             return
 
         context = build_context(root)
-        self.log.emit(f"Активны модели: {', '.join(p['short'] for p in self.providers)}")
+        implementers, reviewer = self._select_team()
+        self.log.emit(
+            f"Режим: {self.orch.get('execution_mode', 'pair')} · "
+            f"исполнители: {', '.join(p['short'] for p in implementers)}"
+            + (f" · ревьюер: {reviewer['short']}" if reviewer else ""))
 
-        # 1) Planning ------------------------------------------------
-        assignments = self._plan(context)
+        assignments = self._plan(context, implementers)
         if self.cancel_event.is_set():
-            self._finish_cancelled()
-            return
+            return self._finish({"status": "cancelled", "message": "Остановлено."})
 
-        # 2) Concurrent agents (dynamic council) --------------------
-        self.assignments = assignments
-        self._context = context
-        self._summaries = summaries = {}
-        self._max_iters = int(self.orch.get("max_tool_iterations", 24))
-
-        with self._agents_lock:
-            self._agents_phase = True
-            for provider in self.providers:
-                assignment = assignments[provider["id"]]
-                usage = Usage()
-                self._usage[provider["id"]] = usage
-                self.live_ids.add(provider["id"])
-                self._spawn_agent(provider, assignment, usage)
-
-        # Wait until every agent thread finishes — including any that were
-        # hot-added mid-run. New threads are appended to _agent_threads under
-        # the lock, so this loop naturally picks them up.
-        while True:
-            with self._agents_lock:
-                pending = [t for t in self._agent_threads if t.is_alive()]
-                if not pending:
-                    self._agents_phase = False
-                    break
-            for thread in pending:
-                thread.join(timeout=0.3)
-
+        summaries = self._execute(implementers, assignments, context)
         if self.cancel_event.is_set():
-            self._finish_cancelled()
-            return
+            return self._finish({"status": "cancelled", "message": "Остановлено."})
 
-        # 3) Report --------------------------------------------------
-        self.log.emit("Собираю единый отчёт…")
-        report = self._compose_report(summaries, root)
-        usage_summary = self._usage_summary()
-        report += "\n\n" + usage_summary["table"]
-        self.report_ready.emit(report, usage_summary)
+        # Integration
+        conflicts = self._integrate(implementers)
+        integ = {
+            "changed_files": self.rw.integration_changed_files(),
+            "conflicts": conflicts,
+            "diff": self.rw.integration_diff()[:20000],
+        }
+        self.integration_ready.emit(integ)
 
-        # Persist the report as a file so it becomes part of the deliverable.
-        report_path = self._write_report_file(root, report)
-        if report_path:
-            self.log.emit(f"Отчёт сохранён: {report_path}")
+        # Review (optional)
+        review_notes = self._review(reviewer, integ["diff"]) if reviewer else ""
 
-        # 4) Commit & push ------------------------------------------
-        self._git_finalize(root, report)
+        # Verification
+        verification = self._verify(root)
+        self._verification = verification.to_dict()
+        self.verification_ready.emit(self._verification)
 
-    def _write_report_file(self, root: str, report: str) -> str | None:
-        try:
-            reports_dir = Path(root) / "ai-reports"
-            reports_dir.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            path = reports_dir / f"report-{stamp}.md"
-            path.write_text(report, encoding="utf-8")
-            return str(path.relative_to(root))
-        except OSError:
-            return None
+        # Report (stored as an artifact OUTSIDE the target repo)
+        report = self._compose_report(summaries, review_notes, integ, verification)
+        self._report = report
+        self.report_ready.emit(report, self._usage_summary())
+        self._save_report_artifact(report)
 
-    # ---- step 1: plan ----------------------------------------------
-    def _plan(self, context: str) -> dict[str, dict]:
-        ids = [p["id"] for p in self.providers]
-        fallback = self._fallback_assignments()
+        can_autopublish = not (
+            self.orch.get("require_verification", True)
+            and verification.blocks_publication())
+        self.awaiting_approval.emit({
+            "status": verification.status,
+            "can_autopublish": can_autopublish,
+            "changed_files": integ["changed_files"],
+            "conflicts": conflicts,
+            "verification": self._verification,
+        })
 
-        if self.orch.get("mode") != "lead" or len(self.providers) == 1:
-            self.plan_ready.emit({"overview": "Режим «каждый сам»: модели работают параллельно над общей задачей.",
-                                  "assignments": fallback})
-            return {a["provider"]: a for a in fallback}
+        # Wait for the human decision.
+        self._decision.wait()
+        if self._decision_value.get("action") != "approve":
+            self.rw.cleanup()          # discard all worktrees + temp branches
+            return self._finish({
+                "status": "cancelled",
+                "message": "Публикация отклонена. Исходный репозиторий не тронут."})
+        self._publish(push=self._decision_value.get("push", False),
+                      blocked=not can_autopublish)
+
+    # ---- planning ---------------------------------------------------
+    def _plan(self, context: str, implementers: list[dict]) -> dict[str, dict]:
+        fallback = {p["id"]: {"provider": p["id"], "role": p["strength"],
+                              "title": p["short"], "objective": self.instruction,
+                              "files": []} for p in implementers}
+        if len(implementers) == 1 or self.orch.get("mode") != "lead":
+            self.plan_ready.emit({"overview": "Один исполнитель работает над задачей.",
+                                  "assignments": list(fallback.values())})
+            return fallback
 
         lead = self._lead_provider()
         self.log.emit(f"{lead['short']} распределяет роли…")
-        roster = "\n".join(
-            f"- {p['id']}: {p['label']} — {p['strength']}" for p in self.providers
-        )
-        system = (
-            "Ты — ведущий архитектор и самый разумный из троицы ИИ. "
-            "Тебе дана задача пользователя. Раздели её примерно поровну между "
-            "доступными моделями. Назначь каждой понятную роль, конкретную "
-            "подзадачу и НЕПЕРЕСЕКАЮЩИЙСЯ набор файлов, чтобы избежать конфликтов. "
-            "Ответь СТРОГО одним JSON-объектом без пояснений."
-        )
-        prompt = (
-            f"Задача пользователя:\n{self.instruction}\n\n"
-            f"Доступные модели:\n{roster}\n\n"
-            f"Структура проекта:\n{context}\n\n"
-            "Верни JSON вида:\n"
-            "{\n"
-            '  "overview": "краткий план в 1-3 предложениях",\n'
-            '  "assignments": [\n'
-            '    {"provider": "<id>", "role": "...", "title": "...", '
-            '"objective": "что именно сделать", "files": ["путь1", "путь2"]}\n'
-            "  ]\n"
-            "}\n"
-            f"Обязательно по одному назначению на каждый id из: {', '.join(ids)}."
-        )
+        roster = "\n".join(f"- {p['id']}: {p['label']} — {p['strength']}"
+                           for p in implementers)
+        system = ("Ты — ведущий архитектор. Раздели задачу между исполнителями с "
+                  "НЕПЕРЕСЕКАЮЩИМИСЯ наборами файлов (каждый работает в своей "
+                  "изолированной ветке). Ответь строго одним JSON-объектом.")
+        prompt = (f"Задача:\n{self.instruction}\n\nИсполнители:\n{roster}\n\n"
+                  f"Структура проекта:\n{context}\n\n"
+                  'JSON: {"overview": "...", "assignments": [{"provider": "<id>", '
+                  '"role": "...", "title": "...", "objective": "...", '
+                  '"files": ["путь"]}]}')
         try:
-            adapter = make_adapter(lead)
-            result = adapter.complete(system, [Message("user", text=prompt)], [])
+            result = make_adapter(lead).complete(system, [Message("user", text=prompt)], [])
             self._usage.setdefault(lead["id"], Usage()).add(result.usage)
             plan = _extract_json(result.text)
         except Exception as exc:
-            self.log.emit(f"Планирование не удалось ({exc}); работаю по равному делению.")
+            self.log.emit(f"Планирование не удалось ({exc}) — безопасный откат: один исполнитель.")
             plan = None
 
         if not plan or "assignments" not in plan:
-            plan = {"overview": "Равное деление задачи.", "assignments": fallback}
+            # SAFE fallback: a single executor, NOT unsafe full parallelism.
+            solo = implementers[0]
+            single = {solo["id"]: fallback[solo["id"]]}
+            self.plan_ready.emit({
+                "overview": "Планирование не удалось — безопасный откат к одному исполнителю.",
+                "assignments": list(single.values())})
+            return single
 
         by_id = {a.get("provider"): a for a in plan.get("assignments", []) if a.get("provider")}
-        # make sure every active provider has an assignment
-        merged: dict[str, dict] = {}
-        for provider in self.providers:
-            a = by_id.get(provider["id"]) or next(
-                (f for f in fallback if f["provider"] == provider["id"]), None)
-            a.setdefault("role", provider["strength"])
-            a.setdefault("title", provider["short"])
+        merged = {}
+        for p in implementers:
+            a = by_id.get(p["id"]) or fallback[p["id"]]
+            a.setdefault("role", p["strength"])
+            a.setdefault("title", p["short"])
             a.setdefault("objective", self.instruction)
             a.setdefault("files", [])
-            merged[provider["id"]] = a
-
+            merged[p["id"]] = a
         self.plan_ready.emit({"overview": plan.get("overview", ""),
                               "assignments": list(merged.values())})
         return merged
 
-    def _fallback_assignments(self) -> list[dict]:
-        return [
-            {
-                "provider": p["id"],
-                "role": p["strength"],
-                "title": p["short"],
-                "objective": self.instruction,
-                "files": [],
-            }
-            for p in self.providers
-        ]
+    # ---- execution --------------------------------------------------
+    def _execute(self, implementers, assignments, context) -> dict[str, str]:
+        self.assignments = assignments
+        summaries: dict[str, str] = {}
+        worktrees = {}
+        # Create worktrees serially (git worktree add must not race).
+        for p in implementers:
+            pid = p["id"]
+            if pid not in assignments:
+                continue
+            allowed = assignments[pid].get("files") or None
+            ws = self.rw.create_agent_worktree(pid, allowed_paths=allowed,
+                                               denied=SECRET_DENY)
+            worktrees[pid] = ws
+            self._usage[pid] = Usage()
+            self.live_ids.add(pid)
+            self.agent_cancels[pid] = threading.Event()
 
-    # ---- step 2: one agent -----------------------------------------
-    def _run_one_agent(self, provider, assignment, context, summaries, usage,
-                       max_iters, cancel, joining_late=False):
+        threads = []
+        for p in implementers:
+            pid = p["id"]
+            if pid not in worktrees:
+                continue
+            self.agent_role.emit(pid, assignments[pid])
+            t = threading.Thread(target=self._run_agent_in_worktree,
+                                 args=(p, assignments[pid], worktrees[pid],
+                                       context, summaries), daemon=True)
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Collect patches from each isolated worktree.
+        self._patches = {}
+        for pid, ws in worktrees.items():
+            try:
+                self._patches[pid] = ws.stage_and_diff()
+            except WorkspaceError as exc:
+                self._patches[pid] = ""
+                self.log.emit(f"Патч {pid} не собран: {exc}")
+        return summaries
+
+    def _run_agent_in_worktree(self, provider, assignment, ws, context, summaries):
         pid = provider["id"]
         on_event = self._emit_agent(pid)
         on_event("status", "работает")
+        combined = _Cancel(self.cancel_event, self.agent_cancels[pid])
+        sandbox = make_sandbox(self.orch.get("sandbox_mode", "restricted"),
+                               str(ws.path),
+                               allow_network=self.orch.get("allow_network", False))
         try:
-            tools = ProjectTools(self.project["local_path"])
-            adapter = make_adapter(provider)
-            files_hint = ", ".join(assignment.get("files") or []) or "(на твоё усмотрение, но не трогай чужие файлы)"
-            system = (
-                f"Ты — {provider['label']}, один из сильнейших ИИ планеты, "
-                "работающий над проектом в составе консилиума моделей. "
-                "У тебя есть инструменты для чтения, записи и редактирования файлов "
-                "репозитория и запуска команд. Пиши качественный рабочий код. "
-                "Работай в рамках своей зоны ответственности и НЕ переписывай "
-                "файлы, назначенные другим. Действуй самостоятельно и доведи "
-                "свою часть до конца. Когда закончишь — вызови инструмент finish "
-                "с кратким отчётом на русском о том, что ты сделал."
-            )
-            join_note = (
-                "\n\nВНИМАНИЕ: ты подключаешься к УЖЕ ИДУЩЕЙ работе. Сначала изучи "
-                "текущее состояние файлов (что уже сделано другими), чтобы ничего "
-                "не сломать и не дублировать, затем помоги довести задачу до конца.\n"
-                if joining_late else ""
-            )
-            initial = Message(
-                "user",
-                text=(
-                    f"Общая задача:\n{self.instruction}\n\n"
-                    f"Твоя роль: {assignment.get('role')}\n"
-                    f"Твоя подзадача: {assignment.get('objective')}\n"
-                    f"Твои файлы: {files_hint}"
-                    f"{join_note}\n\n"
-                    f"Структура проекта:\n{context}\n\n"
-                    "Начинай: изучи нужные файлы и внеси изменения."
-                ),
-            )
-            final = run_agent(
-                adapter=adapter,
-                system=system,
-                initial_messages=[initial],
-                tools=TOOL_SPECS,
-                tool_executor=tools.execute,
-                steering=self.steering,
-                on_event=on_event,
-                max_iters=max_iters,
-                cancel=cancel,
-                total_usage=usage,
-            )
+            tools = ProjectTools(str(ws.path), policy=ws.policy, sandbox=sandbox,
+                                 cancel=combined)
+            files_hint = ", ".join(assignment.get("files") or []) or "(в пределах твоей зоны)"
+            system = (f"Ты — {provider['label']}. Работаешь в СВОЕЙ изолированной "
+                      "копии репозитория. Пиши качественный рабочий код только в "
+                      "своей зоне ответственности; попытки записи вне зоны вернут "
+                      "ошибку. Команды выполняются в песочнице без доступа к "
+                      "секретам и сети. Заверши вызовом finish с кратким отчётом.")
+            initial = Message("user", text=(
+                f"Задача:\n{self.instruction}\n\nТвоя роль: {assignment.get('role')}\n"
+                f"Подзадача: {assignment.get('objective')}\nТвои файлы: {files_hint}\n\n"
+                f"Структура проекта:\n{context}\n\nНачинай."))
+            final = run_agent(make_adapter(provider), system, [initial], TOOL_SPECS,
+                              tools.execute, self.steering, on_event,
+                              int(self.orch.get("max_tool_iterations", 14)),
+                              combined, self._usage[pid])
             summaries[pid] = final
             self.live_ids.discard(pid)
             on_event("status", "отключён" if pid in self.disabled else "готово")
@@ -445,104 +416,157 @@ class Orchestrator(QThread):
             self.live_ids.discard(pid)
             on_event("error", str(exc))
             on_event("status", "ошибка")
+        finally:
+            sandbox.close()
 
-    # ---- step 3: report --------------------------------------------
-    def _compose_report(self, summaries: dict[str, str], root: str) -> str:
+    # ---- integration ------------------------------------------------
+    def _integrate(self, implementers) -> list[dict]:
+        self.rw.create_integration_worktree()
+        conflicts = []
+        for p in implementers:
+            pid = p["id"]
+            patch = getattr(self, "_patches", {}).get(pid, "")
+            if not patch.strip():
+                continue
+            ok, msg = self.rw.apply_patch(patch)
+            if not ok:
+                conflicts.append({"provider": pid, "message": msg[:400]})
+                self.log.emit(f"Конфликт интеграции {self._cfg(pid)['short']}: {msg[:120]}")
+        return conflicts
+
+    # ---- review -----------------------------------------------------
+    def _review(self, reviewer, diff) -> str:
+        if not diff.strip():
+            return "(нет изменений для ревью)"
+        self.log.emit(f"{reviewer['short']} проверяет объединённый дифф…")
+        system = ("Ты — независимый ревьюер. Проверь дифф на баги, риски и "
+                  "нарушения требований. Кратко перечисли найденное и вердикт.")
         try:
-            diff = git_service.diff_stat(root)
-            files = git_service.changed_files(root)
+            res = make_adapter(reviewer).complete(
+                system, [Message("user", text=f"Задача:\n{self.instruction}\n\n"
+                                              f"Дифф:\n{diff[:16000]}")], [])
+            self._usage.setdefault(reviewer["id"], Usage()).add(res.usage)
+            self.agent_event.emit(reviewer["id"], "text", res.text[:1500])
+            return res.text
         except Exception as exc:
-            diff, files = f"(git недоступен: {exc})", []
+            return f"(ревью не выполнено: {exc})"
 
-        parts = []
-        for provider in self.providers:
-            pid = provider["id"]
-            parts.append(f"### {provider['label']}\n{summaries.get(pid, '(нет отчёта)')}")
-        joined = "\n\n".join(parts)
+    # ---- verification -----------------------------------------------
+    def _verify(self, root):
+        commands = self.project.get("verify_commands") or detect_commands(
+            str(self.rw.integration_path))
+        if commands:
+            self.log.emit("Проверка: " + ", ".join(c["name"] for c in commands))
+        return run_verification(str(self.rw.integration_path), commands,
+                                mode=self.orch.get("sandbox_mode", "restricted"),
+                                allow_network=self.orch.get("allow_network", False),
+                                cancel=self.cancel_event)
 
+    # ---- report -----------------------------------------------------
+    def _compose_report(self, summaries, review_notes, integ, verification) -> str:
         lead = self._lead_provider()
-        system = (
-            "Ты — ведущий архитектор. Составь единый структурированный отчёт о "
-            "проделанной работе трёх ИИ на русском языке в Markdown: краткое "
-            "резюме, что сделала каждая модель, изменённые файлы и рекомендации "
-            "по дальнейшим шагам. Пиши по делу."
-        )
-        prompt = (
-            f"Задача пользователя:\n{self.instruction}\n\n"
-            f"Отчёты моделей:\n{joined}\n\n"
-            f"git diff --stat:\n{diff}\n\n"
-            f"Изменённые файлы:\n{chr(10).join(files) or '(нет)'}"
-        )
+        agent_parts = "\n\n".join(
+            f"### {self._cfg(pid)['label']}\n{summ}" for pid, summ in summaries.items())
+        vlines = "\n".join(f"- **{c.name}**: {c.status} ({c.summary})"
+                           for c in verification.checks) or "- (проверок нет)"
+        conflicts = "\n".join(f"- {c['provider']}: {c['message']}"
+                              for c in integ["conflicts"]) or "- нет"
+        base = (
+            f"# Отчёт по задаче\n\n**Задача:** {self.instruction}\n\n"
+            f"## Что сделали исполнители\n{agent_parts}\n\n"
+            f"## Ревью\n{review_notes or '(без ревью)'}\n\n"
+            f"## Интеграция\nИзменённые файлы: "
+            f"{', '.join(integ['changed_files']) or 'нет'}\n\nКонфликты:\n{conflicts}\n\n"
+            f"## Верификация — статус: **{verification.status}** (риск: {verification.risk})\n"
+            f"{vlines}\n")
+        # Optional lead synthesis on top (best-effort).
         try:
-            adapter = make_adapter(lead)
-            result = adapter.complete(system, [Message("user", text=prompt)], [])
-            self._usage.setdefault(lead["id"], Usage()).add(result.usage)
-            if result.text.strip():
-                return result.text
-        except Exception as exc:
-            self.log.emit(f"Синтез отчёта не удался ({exc}); собираю базовый отчёт.")
-
-        # Fallback report if the lead call failed.
-        header = "# Отчёт по задаче\n\n" + f"**Задача:** {self.instruction}\n\n"
-        return header + joined + f"\n\n## Изменённые файлы\n```\n{diff}\n```"
+            res = make_adapter(lead).complete(
+                "Ты — ведущий архитектор. Сделай краткое резюме (2-4 предложения) "
+                "по результатам работы, честно отметив риски и что НЕ проверено.",
+                [Message("user", text=base[:14000])], [])
+            self._usage.setdefault(lead["id"], Usage()).add(res.usage)
+            if res.text.strip():
+                base = f"# Отчёт по задаче\n\n{res.text}\n\n" + base[len("# Отчёт по задаче\n\n"):]
+        except Exception:
+            pass
+        return base + "\n\n" + self._usage_summary()["table"]
 
     def _usage_summary(self) -> dict:
-        rows = ["| Модель | Вход (ток.) | Выход (ток.) | Стоимость |",
-                "|---|---|---|---|"]
-        total_cost = 0.0
-        total_in = total_out = 0
-        by_provider = {p["id"]: p for p in self.providers}
+        rows = ["| Модель | Вход | Выход | Стоимость | Оплата |", "|---|---|---|---|---|"]
+        total_cost = total_in = total_out = 0
         for pid, usage in self._usage.items():
-            provider = by_provider.get(pid) or self.config.providers.get(pid, {})
-            price_in = provider.get("price_in", 0.0)
-            price_out = provider.get("price_out", 0.0)
-            cost = usage.input_tokens / 1e6 * price_in + usage.output_tokens / 1e6 * price_out
+            p = self._cfg(pid)
+            cost = usage.input_tokens / 1e6 * p.get("price_in", 0) \
+                + usage.output_tokens / 1e6 * p.get("price_out", 0)
             total_cost += cost
             total_in += usage.input_tokens
             total_out += usage.output_tokens
-            rows.append(f"| {provider.get('short', pid)} | {usage.input_tokens} | "
-                        f"{usage.output_tokens} | ${cost:.4f} |")
-        rows.append(f"| **Итого** | {total_in} | {total_out} | **${total_cost:.4f}** |")
-        table = "## Расход токенов и стоимость\n" + "\n".join(rows)
-        return {"table": table, "total_cost": total_cost,
-                "input_tokens": total_in, "output_tokens": total_out}
+            billing = {"api": "API", "subscription": p.get("subscription_tier") or "подписка",
+                       "local": "локально"}.get(p.get("billing_source"), "—")
+            rows.append(f"| {p.get('short', pid)} | {usage.input_tokens} | "
+                        f"{usage.output_tokens} | ${cost:.4f} | {billing} |")
+        rows.append(f"| **Итого (API)** | {total_in} | {total_out} | **${total_cost:.4f}** | |")
+        return {"table": "## Расход токенов и стоимость\n" + "\n".join(rows),
+                "total_cost": total_cost, "input_tokens": total_in,
+                "output_tokens": total_out}
 
-    # ---- step 4: git -----------------------------------------------
-    def _git_finalize(self, root: str, report: str) -> None:
-        result = {"status": "done", "branch": self.project.get("branch", "main"),
+    def _save_report_artifact(self, report: str) -> None:
+        try:
+            from .config import CONFIG_DIR
+            reports = CONFIG_DIR / "reports"
+            reports.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            path = reports / f"report-{self.rw.run_id}-{stamp}.md"
+            path.write_text(report, encoding="utf-8")
+            self.log.emit(f"Отчёт сохранён (вне репозитория): {path}")
+        except OSError:
+            pass
+
+    # ---- publish ----------------------------------------------------
+    def _publish(self, push: bool, blocked: bool) -> None:
+        result = {"status": "done", "branch": self.rw.integration_branch,
                   "commit": None, "pushed": False, "message": ""}
         try:
-            if not git_service.has_repo(root):
-                git_service.init_repo(root)
-            branch = self.project.get("branch") or git_service.current_branch(root) or "main"
-            git_service.ensure_branch(root, branch)
-            first_line = report.strip().splitlines()[0].lstrip("# ").strip()
-            prefix = self.orch.get("commit_prefix", "")
-            title = (prefix + first_line)[:100] or "Работа трёх ИИ"
-            commit = git_service.commit_all(root, title)
-            result["branch"] = branch
+            first = self._report.strip().splitlines()
+            title = (self.orch.get("commit_prefix", "") +
+                     (first[0].lstrip("# ").strip() if first else "Работа консилиума"))[:100]
+            commit = self.rw.commit_integration(title or "Работа консилиума")
             result["commit"] = commit
             if commit is None:
                 result["message"] = "Изменений для коммита нет."
-                self.run_finished.emit(result)
-                return
-            self.log.emit(f"Коммит {commit} в ветку {branch}")
-            if self.orch.get("auto_push", True):
-                git_service.push(root, branch,
-                                 self.project.get("github_url", ""),
-                                 self.project.get("github_token", ""))
+                self.rw.cleanup()
+                return self._finish(result)
+            self._published_branch = self.rw.integration_branch
+            self.log.emit(f"Коммит {commit} в ветку {self.rw.integration_branch}")
+            if push and blocked:
+                result["message"] = (f"Коммит {commit} создан в ветке "
+                                     f"{self.rw.integration_branch}. Пуш отменён: "
+                                     "верификация не пройдена.")
+            elif push:
+                self.rw.push_integration(self.project.get("github_url", ""),
+                                         self.project.get("github_token", ""))
                 result["pushed"] = True
-                self.log.emit(f"✔ Запушено в {branch}")
-                result["message"] = f"Коммит {commit} запушен в ветку {branch}."
+                result["message"] = (f"Коммит {commit} запушен в ветку "
+                                     f"{self.rw.integration_branch}. Открой из неё PR "
+                                     "(в целевую ветку напрямую не пушим).")
             else:
-                result["message"] = f"Коммит {commit} создан (пуш выключен)."
+                result["message"] = (f"Коммит {commit} в локальной ветке "
+                                     f"{self.rw.integration_branch}. Пуш не запрашивался.")
         except Exception as exc:
             result["status"] = "partial"
             result["message"] = f"Работа выполнена, но git-операция не удалась: {exc}"
-            self.log.emit(result["message"])
+        # keep the integration branch (published), drop agent temp branches + worktrees
+        self.rw.cleanup(keep=[self.rw.integration_branch])
+        self._finish(result)
+
+    def _finish(self, result: dict) -> None:
         self.run_finished.emit(result)
 
-    def _finish_cancelled(self) -> None:
-        self.run_finished.emit({"status": "cancelled", "branch": self.project.get("branch"),
-                                "commit": None, "pushed": False,
-                                "message": "Задача остановлена пользователем."})
+    def _safe_cleanup(self) -> None:
+        try:
+            if self.rw is not None:
+                keep = [self.rw.integration_branch] if self._published_branch else []
+                self.rw.cleanup(keep=keep)
+        except Exception:
+            pass

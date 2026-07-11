@@ -8,9 +8,11 @@ allowed — including running shell commands — matching the "я всё все�
 from __future__ import annotations
 
 import subprocess
+import threading
 from pathlib import Path
 
 from .providers.base import ToolSpec
+from .security import PathPolicy, PathViolation
 
 TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
@@ -92,10 +94,19 @@ _MAX_OUTPUT = 8_000
 
 
 class ProjectTools:
-    """Executes tool calls against a single project root."""
+    """Executes tool calls against a single agent worktree.
 
-    def __init__(self, root: str):
+    When a PathPolicy is supplied, writes are technically confined to the
+    agent's assigned paths; when a sandbox is supplied, `run_command` runs in it
+    (scrubbed env, no secrets, killable) instead of on the host.
+    """
+
+    def __init__(self, root: str, policy: PathPolicy | None = None,
+                 sandbox=None, cancel: threading.Event | None = None):
         self.root = Path(root).resolve()
+        self.policy = policy
+        self.sandbox = sandbox
+        self.cancel = cancel
 
     def _resolve(self, rel: str) -> Path:
         target = (self.root / (rel or ".")).resolve()
@@ -103,18 +114,26 @@ class ProjectTools:
             raise ValueError("Путь выходит за пределы проекта")
         return target
 
+    def _for_read(self, rel: str) -> Path:
+        return self.policy.resolve_read(rel) if self.policy else self._resolve(rel)
+
+    def _for_write(self, rel: str) -> Path:
+        return self.policy.resolve_write(rel) if self.policy else self._resolve(rel)
+
     def execute(self, name: str, args: dict) -> str:
         handler = getattr(self, f"_tool_{name}", None)
         if handler is None:
             return f"ERROR: неизвестный инструмент {name}"
         try:
             return handler(args or {})
+        except PathViolation as exc:
+            return f"ERROR (нарушение зоны ответственности): {exc}"
         except Exception as exc:  # never crash the agent loop on a bad tool call
             return f"ERROR: {exc}"
 
     # ---- individual tools -------------------------------------------
     def _tool_list_dir(self, args: dict) -> str:
-        path = self._resolve(args.get("path", "."))
+        path = self._for_read(args.get("path", "."))
         if not path.exists():
             return "ERROR: путь не найден"
         if path.is_file():
@@ -130,7 +149,7 @@ class ProjectTools:
         return "\n".join(lines) or "(пусто)"
 
     def _tool_read_file(self, args: dict) -> str:
-        path = self._resolve(args["path"])
+        path = self._for_read(args["path"])
         if not path.exists() or not path.is_file():
             return "ERROR: файл не найден"
         try:
@@ -142,13 +161,13 @@ class ProjectTools:
         return data
 
     def _tool_write_file(self, args: dict) -> str:
-        path = self._resolve(args["path"])
+        path = self._for_write(args["path"])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(args.get("content", ""), encoding="utf-8")
         return f"Записано: {args['path']} ({len(args.get('content', ''))} символов)"
 
     def _tool_edit_file(self, args: dict) -> str:
-        path = self._resolve(args["path"])
+        path = self._for_write(args["path"])
         if not path.exists():
             return "ERROR: файл не найден"
         data = path.read_text(encoding="utf-8", errors="replace")
@@ -162,7 +181,7 @@ class ProjectTools:
         return f"Отредактировано: {args['path']}"
 
     def _tool_delete_path(self, args: dict) -> str:
-        path = self._resolve(args["path"])
+        path = self._for_write(args["path"])
         if not path.exists():
             return "ERROR: путь не найден"
         try:
@@ -176,6 +195,10 @@ class ProjectTools:
 
     def _tool_run_command(self, args: dict) -> str:
         command = args["command"]
+        if self.sandbox is not None:
+            res = self.sandbox.run(command, cancel=self.cancel)
+            return f"exit={res.exit_code} [{res.backend}/net:{res.network}]\n{res.output}".strip()
+        # Legacy host execution (no sandbox) — only used outside a run.
         try:
             proc = subprocess.run(
                 command, shell=True, cwd=str(self.root),
