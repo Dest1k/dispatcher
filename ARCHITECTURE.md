@@ -9,8 +9,8 @@ background orchestration engine and an intelligence layer.
 app/
   config.py            projects + dynamic provider profiles; secret-ref persistence
   cliagents.py         discovery of official CLIs: install/auth/models/readiness
-  cli.py               `dispatcher` entry: doctor, council, route, capabilities,
-                       reputation, memory, gui
+  cli.py               `dispatcher` entry: doctor, run (headless orchestration),
+                       council, route, capabilities, reputation, memory, gui
   security/            redaction, path-ownership policy, OS secret store
   providers/           provider-neutral messages/tools + adapters:
                        anthropic (REST), openai_compat (REST/SSE),
@@ -43,10 +43,11 @@ prepare workspaces ── refuse if source tree dirty ── record base commit
   ▼
 memory_graph.context_pack(project, task) ──► injected into prompts
   ▼
-select team (solo | pair | council/full_council)  ──►  lead plans (JSON zones)
+select team (solo | pair | adaptive | council/full_council) ──► lead plans (JSON zones)
   │            optional: red-team critique of the plan (council_planning)
   │            plan validation (zone overlaps) ── safe fallback: single executor
-  ▼
+  ▼            ┌─ adaptive: solo attempt; on verification FAIL, escalate to a
+  │            │  pair in fresh worktrees, feeding the failure back, then retry
 per implementer: own git worktree + PathPolicy + sandbox
   │   API providers → run_agent tool loop (write/edit/read/run_command/finish)
   │   CLI providers → native_run: the official CLI edits inside the worktree

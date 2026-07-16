@@ -153,6 +153,7 @@ class Orchestrator(QThread):
         self._report = ""
         self._verification: dict = {}
         self._published_branch: str | None = None
+        self._escalation_note = ""
 
     # ---- external controls ------------------------------------------
     def add_steering(self, text: str) -> None:
@@ -297,8 +298,63 @@ class Orchestrator(QThread):
             return [ordered[0]], None
         if mode in ("full_council", "council"):
             return active, lead
-        # pair / adaptive
+        # pair / adaptive (adaptive's first attempt is chosen in _attempt_plan)
         return [ordered[0]], ordered[1]
+
+    def _attempt_plan(self) -> list[tuple[list[dict], dict | None]]:
+        """Ordered (implementers, reviewer) attempts. Adaptive mode starts solo
+        and escalates to a pair on verification failure; every other mode is a
+        single attempt with its normal team."""
+        mode = self.orch.get("execution_mode", "pair")
+        if mode == "adaptive" and len(self.providers) > 1:
+            lead = self._lead_provider()
+            ordered = [lead] + [p for p in self.providers if p["id"] != lead["id"]]
+            return [([ordered[0]], None), ([ordered[0]], ordered[1])]
+        return [self._select_team()]
+
+    def _integrate_and_score(self, implementers) -> tuple[dict, list[dict]]:
+        self._ck(RunState.INTEGRATING)
+        conflicts = self._integrate(implementers)
+        full_diff = self.rw.integration_diff()
+        integ = {
+            "changed_files": self.rw.integration_changed_files(),
+            "conflicts": conflicts,
+            "diff": full_diff[:20000],
+        }
+        # Deterministic risk score of the integrated change (explainable).
+        self.change_risk = assess_change(full_diff, integ["changed_files"])
+        integ["change_risk"] = self.change_risk.to_dict()
+        self.integration_ready.emit(integ)
+        return integ, conflicts
+
+    @staticmethod
+    def _verification_failure_summary(verification) -> str:
+        if verification is None:
+            return "(нет данных)"
+        fails = [f"{c.name}: {c.summary}" for c in verification.checks
+                 if c.status != "pass"]
+        return "; ".join(fails[:5]) or f"статус {verification.status}"
+
+    def _reset_workspaces_for_retry(self, root: str) -> None:
+        """Fresh isolated workspaces for an escalation attempt. The source tree
+        was never written by the previous attempt, so the same base commit is
+        reused; a new run_dir/branch namespace avoids collisions."""
+        try:
+            self.rw.cleanup()
+        except Exception:
+            pass
+        self.rw = RunWorkspaces(root)
+        info = self.rw.prepare()
+        if info["dirty"]:
+            raise WorkspaceError(
+                "рабочее дерево стало грязным между попытками — прерываю")
+        if self.run_id:
+            self.store.set_workspace(self.run_id, str(self.rw.run_dir),
+                                     self.rw.integration_branch)
+        self.live_ids = set()
+        self.agent_cancels = {}
+        self.disabled = set()
+        self._patches = {}
 
     # ---- run --------------------------------------------------------
     def run(self) -> None:
@@ -376,58 +432,75 @@ class Orchestrator(QThread):
         if memory_ctx:
             context = f"{context}\n\n{memory_ctx}"
             self.log.emit("Память проекта подключена к контексту задачи")
-        implementers, reviewer = self._select_team()
         max_iters = int(self.orch.get("max_tool_iterations", 14))
         cap = self.budget.cap
-        self.log.emit(
-            f"Режим: {self.orch.get('execution_mode', 'pair')} · "
-            f"исполнители: {', '.join(p['short'] for p in implementers)}"
-            + (f" · ревьюер: {reviewer['short']}" if reviewer else ""))
-        # Forecast before the run starts (worst-case model calls + budget).
-        self.log.emit(
-            f"Прогноз: до ~{len(implementers) * max_iters} вызовов моделей · "
-            f"бюджет: {('$' + format(cap, '.2f')) if cap > 0 else 'без ограничения'}")
 
-        self._ck(RunState.PLANNING)
-        assignments = self._plan(context, implementers)
-        if self.cancel_event.is_set():
-            return self._finish({"status": "cancelled", "message": "Остановлено."},
-                                RunState.CANCELLED)
+        # Adaptive mode escalates solo → pair on a failed verification; every
+        # other mode is a single attempt with its normal team. The attempt loop
+        # runs plan→execute→integrate→review→verify; report/approval/publish
+        # happen once, on the final attempt's result.
+        attempts = self._attempt_plan()
+        summaries: dict[str, str] = {}
+        integ: dict = {}
+        conflicts: list[dict] = []
+        review_notes = ""
+        verification = None
+        implementers, reviewer = attempts[0]
 
-        self._ck(RunState.EXECUTING)
-        summaries = self._execute(implementers, assignments, context)
-        if self.cancel_event.is_set():
-            return self._finish({"status": "cancelled", "message": "Остановлено."},
-                                RunState.CANCELLED)
+        for attempt_idx, (implementers, reviewer) in enumerate(attempts):
+            is_last = attempt_idx == len(attempts) - 1
+            if attempt_idx == 0:
+                self.log.emit(
+                    f"Режим: {self.orch.get('execution_mode', 'pair')} · "
+                    f"исполнители: {', '.join(p['short'] for p in implementers)}"
+                    + (f" · ревьюер: {reviewer['short']}" if reviewer else ""))
+            else:
+                self._escalation_note = (
+                    f"Попытка {attempt_idx} (одиночный исполнитель) не прошла "
+                    f"верификацию: {self._verification_failure_summary(verification)}. "
+                    "Выполнена эскалация до пары исполнитель+ревьюер.")
+                self.log.emit(
+                    f"↑ Эскалация (попытка {attempt_idx + 1}): исполнители "
+                    f"{', '.join(p['short'] for p in implementers)}"
+                    + (f" · ревьюер: {reviewer['short']}" if reviewer else ""))
+                self._reset_workspaces_for_retry(root)
+                self.steering.add(
+                    "Прошлая попытка НЕ прошла верификацию:\n"
+                    f"{self._verification_failure_summary(verification)}\n"
+                    "Устрани причины провала, не повторяй те же ошибки.")
+            self.log.emit(
+                f"Прогноз: до ~{len(implementers) * max_iters} вызовов моделей · "
+                f"бюджет: {('$' + format(cap, '.2f')) if cap > 0 else 'без ограничения'}")
 
-        # Integration
-        self._ck(RunState.INTEGRATING)
-        conflicts = self._integrate(implementers)
-        full_diff = self.rw.integration_diff()
-        integ = {
-            "changed_files": self.rw.integration_changed_files(),
-            "conflicts": conflicts,
-            "diff": full_diff[:20000],
-        }
-        # Deterministic risk score of the integrated change (explainable).
-        self.change_risk = assess_change(full_diff, integ["changed_files"])
-        integ["change_risk"] = self.change_risk.to_dict()
-        self.integration_ready.emit(integ)
+            self._ck(RunState.PLANNING)
+            assignments = self._plan(context, implementers)
+            if self.cancel_event.is_set():
+                return self._finish({"status": "cancelled", "message": "Остановлено."},
+                                    RunState.CANCELLED)
 
-        # Review (optional)
-        review_notes = self._review(reviewer, integ["diff"]) if reviewer else ""
+            self._ck(RunState.EXECUTING)
+            summaries = self._execute(implementers, assignments, context)
+            if self.cancel_event.is_set():
+                return self._finish({"status": "cancelled", "message": "Остановлено."},
+                                    RunState.CANCELLED)
 
-        # Verification
-        self._ck(RunState.VERIFYING)
-        verification = self._verify(root)
-        self._verification = verification.to_dict()
-        self._verification["change_risk"] = self.change_risk.to_dict()
-        for check in verification.checks:
-            self.ledger.record("test", f"{check.name}: {check.status}")
-        passed = verification.status == "pass"
-        for p in implementers:
-            self.reputation.record_verification(p["id"], passed)
-        self.verification_ready.emit(self._verification)
+            integ, conflicts = self._integrate_and_score(implementers)
+            review_notes = self._review(reviewer, integ["diff"]) if reviewer else ""
+
+            self._ck(RunState.VERIFYING)
+            verification = self._verify(root)
+            self._verification = verification.to_dict()
+            self._verification["change_risk"] = self.change_risk.to_dict()
+            for check in verification.checks:
+                self.ledger.record("test", f"{check.name}: {check.status}")
+            passed = verification.status == "pass"
+            for p in implementers:
+                self.reputation.record_verification(p["id"], passed)
+            self.verification_ready.emit(self._verification)
+
+            if passed or is_last or self.budget_event.is_set() \
+                    or self.cancel_event.is_set():
+                break
 
         # Report (stored as an artifact OUTSIDE the target repo), redacted.
         report = redact(self._compose_report(summaries, review_notes, integ, verification))
@@ -826,8 +899,11 @@ class Orchestrator(QThread):
                        if self.budget_event.is_set() else "")
         risk_md = (self.change_risk.describe() if self.change_risk
                    else "Риск изменений: не оценивался")
+        escalation_md = (f"\n> ↑ {self._escalation_note}\n"
+                         if self._escalation_note else "")
         base = (
-            f"# Отчёт по задаче\n\n**Задача:** {self.instruction}\n{budget_note}\n"
+            f"# Отчёт по задаче\n\n**Задача:** {self.instruction}\n{budget_note}"
+            f"{escalation_md}\n"
             f"## Что сделали исполнители\n{agent_parts}\n\n"
             f"## Ревью\n{review_notes or '(без ревью)'}\n\n"
             f"## Интеграция\nИзменённые файлы: "

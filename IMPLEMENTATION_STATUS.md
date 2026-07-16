@@ -47,7 +47,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 24 | Draft PR after approval | ✅ push integration branch + one-click "compare/PR" URL; API PR creation optional (token/App) |
 | 25 | Reports stored consistently; no `.gitignore` contradiction | ✅ |
 | 26 | UI doesn't claim raw chain-of-thought | ✅ |
-| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction (94 tests) |
+| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (193 tests) |
 | 28 | README describes only real functionality | ✅ |
 | 29 | User config migratable without losing projects | ✅ |
 | 30 | Original repo recoverable after failed/cancelled run | ✅ |
@@ -100,20 +100,35 @@ Test suite 77 → 100.
   integration boundary (out-of-zone/secret-path writes reject the patch whole).
 - **Fixes**: Windows patch corruption (`write_text` CRLF translation broke
   `git apply` context matching); wheel packaging now includes subpackages.
+- **Headless `dispatcher run`**: the full orchestration pipeline (plan →
+  isolated worktrees → integrate → review → verification → risk → publish)
+  from the terminal, driven synchronously (no GUI), with a safe
+  publication-decision policy (`decide_publication`): approved runs commit
+  only the isolated integration branch locally; `--push` required to push and
+  refused when verification blocked; `partial`/failed verification or
+  high-risk diff needs `--yes`; `--dry-run` runs everything and publishes
+  nothing; target branch never written.
+- **Adaptive escalation**: `execution_mode: adaptive` runs a solo attempt and,
+  on a failed verification, escalates to a pair in fresh isolated worktrees,
+  feeding the failure summary back as steering, then retries once.
 - Live validation on this machine: `doctor` 3/3 ready; `--probe` round-trips
   pong via claude (3.2 s), codex (11.4 s), grok (3.5 s); a live
   `full_council` ran the whole architect→red-team→feasibility→synthesis
   pipeline and **found two real config.py defects** (non-atomic save, silent
-  reset of corrupt config) — both fixed with regression tests in this session.
-- Test suite 100 → 180 (still no network, no real CLI spawns in tests).
+  reset of corrupt config) — both fixed with regression tests; a live headless
+  `dispatcher run` over the real Claude CLI created a file in an isolated
+  worktree and the dry-run left the source repo completely untouched.
+- Test suite 100 → 193 (still no network, no real CLI spawns in tests; the
+  new run/escalation e2e tests use real git with mocked providers/verification).
 
 ## Where to continue next
 
 1. Wire the multi-round council into the implementation pipeline (council
    verdict → plan → implement → cross-review), reusing `council.py`.
-2. Adaptive escalation: start solo, escalate to pair/council on verification
-   failure (currently `adaptive` ≈ pair).
-3. Headless `dispatcher run` (decouple orchestrator from QThread).
-4. Docker container-per-agent for the implementation step; richer run
+2. Extend adaptive escalation beyond one step (solo → pair → full_council) and
+   make the escalation ladder configurable.
+3. Docker container-per-agent for the implementation step; richer run
    dashboard / task-graph view; API-based draft PR (needs GitHub token/App);
    memory-graph browser in the UI.
+4. A validated task-DAG scheduler (dependencies/cycles/budget) above the
+   current disjoint-zones planner.

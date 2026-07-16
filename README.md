@@ -58,6 +58,7 @@ and logged in (`claude`, `codex login`, `grok login`).
 ```bash
 pip install -e .
 dispatcher doctor          # what is installed, logged in, which models exist
+dispatcher run "..."       # full orchestration from the terminal (headless)
 dispatcher                 # GUI (or: python run.py)
 ```
 
@@ -76,6 +77,26 @@ Claude Code CLI (Anthropic)
 
 `dispatcher doctor --probe` performs one real round-trip through every ready
 CLI (clearly labeled: it spends subscription quota).
+
+## Headless orchestration (`dispatcher run`)
+
+Runs the whole pipeline — plan → isolated worktrees → integrate → review →
+verification → risk → publication decision — from the terminal, over the CLI
+agents, with no GUI:
+
+```bash
+dispatcher run "Refactor the database layer" --mode adaptive
+dispatcher run "..." --project <path|id>  --providers claude_cli,codex_cli
+dispatcher run "..." --dry-run --show-diff     # run everything, publish nothing
+dispatcher run "..." --push                    # push the integration branch (never the target)
+```
+
+**Safe by default:** an approved run commits only the isolated
+`dispatcher/<id>/integration` branch **locally**; `--push` is required to push
+it (and is refused when verification blocked); a `partial`/failed verification
+or a high-risk diff requires an explicit `--yes`; the target branch is never
+written. `--mode adaptive` starts solo and **escalates to a pair on a failed
+verification**, feeding the failure back into the retry.
 
 ## The AI Council
 

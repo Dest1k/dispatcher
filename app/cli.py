@@ -132,6 +132,177 @@ def _probe(statuses, cfg) -> dict:
 
 
 # --------------------------------------------------------------------------
+# run — full orchestration pipeline, headless
+# --------------------------------------------------------------------------
+
+def decide_publication(status: str, can_autopublish: bool, risk_level: str,
+                       *, dry_run: bool, yes: bool, push: bool) -> tuple[str, bool, str]:
+    """Safe headless publication policy → (action, push, reason).
+
+    Never pushes to the target branch; publication only ever commits/pushes the
+    isolated integration branch (the orchestrator enforces this). Defaults are
+    conservative: a blocked verification, a `partial` result, or a high-risk
+    diff all require an explicit `--yes`. `--push` is honored only on approval
+    and is refused downstream when verification blocked.
+    """
+    if dry_run:
+        return "reject", False, "dry-run: показываю результат без публикации"
+    if not can_autopublish:
+        if yes:
+            return ("approve", push,
+                    "верификация не пройдена, но задано --yes: коммичу локально"
+                    + (" (пуш будет отменён из-за верификации)" if push else ""))
+        return ("reject", False,
+                "верификация не пройдена — публикация заблокирована "
+                "(--yes чтобы всё равно закоммитить локально)")
+    if status == "partial" and not yes:
+        return ("reject", False,
+                "верификация частичная — нужен --yes для публикации")
+    if risk_level == "high" and not yes:
+        return ("reject", False,
+                "высокий риск изменений — нужен --yes для публикации")
+    tail = (", пушу интеграционную ветку" if push
+            else " (локально; --push чтобы отправить ветку)")
+    return "approve", push, f"верификация ок, риск {risk_level} — коммичу{tail}"
+
+
+def _resolve_project(cfg, project: str) -> dict | None:
+    """A full project dict for the orchestrator, from config or an ad-hoc path."""
+    if project:
+        for p in cfg.projects:
+            if project in (p.get("id"), p.get("name")):
+                return p
+    path = Path(project).resolve() if project else Path.cwd().resolve()
+    for p in cfg.projects:
+        if p.get("local_path") and Path(p["local_path"]).resolve() == path:
+            return p
+    if not (path / ".git").exists():
+        return None
+    return {"id": f"adhoc:{path.name}", "name": path.name,
+            "local_path": str(path), "github_repo": "", "github_url": "",
+            "branch": "", "github_token": "", "verify_commands": [],
+            "chat": [], "runs": []}
+
+
+def cmd_run(args) -> int:
+    from PySide6.QtCore import QCoreApplication, Qt
+
+    from .config import Config
+    from .orchestrator import Orchestrator
+    cfg = Config.load()
+    project = _resolve_project(cfg, args.project)
+    if project is None:
+        _p("Проект не найден. Укажи --project (id/имя из конфига или путь к "
+           "git-репозиторию) или запусти внутри git-репозитория.")
+        return 2
+    providers = _load_active_providers(cfg, args.providers)
+    if not providers:
+        _p("Нет активных провайдеров. Проверь `dispatcher doctor`.")
+        return 1
+    if args.mode:
+        cfg.orchestration["execution_mode"] = args.mode
+    if args.providers:
+        # honor an explicit subset by disabling the rest for this run
+        wanted = {p["id"] for p in providers}
+        for pid, prov in cfg.providers.items():
+            prov["enabled"] = pid in wanted and prov.get("enabled", False)
+
+    QCoreApplication.instance() or QCoreApplication([])
+    orc = Orchestrator(cfg, project, args.task)
+    state: dict = {}
+
+    def log(msg: str) -> None:
+        _p(msg)
+
+    def on_plan(plan: dict) -> None:
+        _p("\n── План ──")
+        if plan.get("overview"):
+            _p(plan["overview"])
+        for a in plan.get("assignments", []):
+            files = ", ".join(a.get("files") or []) or "(в своей зоне)"
+            _p(f"  • {a.get('title', a.get('provider'))}: "
+               f"{a.get('objective', '')} — файлы: {files}")
+
+    def on_agent(pid: str, kind: str, payload: str) -> None:
+        if kind == "status":
+            _p(f"  [{pid}] {payload}")
+        elif kind == "error":
+            _p(f"  [{pid}] ⚠ {payload[:300]}")
+        elif kind == "text":
+            state.setdefault("finals", {})[pid] = payload
+
+    def on_integration(integ: dict) -> None:
+        files = ", ".join(integ.get("changed_files") or []) or "нет"
+        _p(f"\n── Интеграция ──\nИзменённые файлы: {files}")
+        if integ.get("conflicts"):
+            _p(f"Конфликты: {len(integ['conflicts'])}")
+        risk = integ.get("change_risk") or {}
+        if risk:
+            _p(f"Риск изменений: {risk.get('level')} (счёт {risk.get('score')})")
+        if args.show_diff and integ.get("diff"):
+            _p("\n── Дифф ──\n" + integ["diff"])
+
+    def on_verification(v: dict) -> None:
+        _p(f"\n── Верификация: {v.get('status')} (риск {v.get('risk')}) ──")
+        for c in v.get("checks", []):
+            _p(f"  • {c['name']}: {c['status']} (exit={c.get('exit_code')})")
+
+    def on_report(report: str, usage: dict) -> None:
+        state["report"] = report
+        state["usage"] = usage
+
+    def on_gate(payload: dict) -> None:
+        action, push, reason = decide_publication(
+            payload.get("status", "unknown"),
+            payload.get("can_autopublish", False),
+            (payload.get("change_risk") or {}).get("level", "low"),
+            dry_run=args.dry_run, yes=args.yes, push=args.push)
+        _p(f"\n── Решение: {action} ── {reason}")
+        state["decision"] = (action, reason)
+        orc.approve(push=push) if action == "approve" else orc.reject()
+
+    def on_finished(result: dict) -> None:
+        state["result"] = result
+
+    def on_error(msg: str) -> None:
+        state["error"] = msg
+
+    d = Qt.DirectConnection
+    orc.log.connect(log, d)
+    orc.plan_ready.connect(on_plan, d)
+    orc.agent_event.connect(on_agent, d)
+    orc.integration_ready.connect(on_integration, d)
+    orc.verification_ready.connect(on_verification, d)
+    orc.report_ready.connect(on_report, d)
+    orc.awaiting_approval.connect(on_gate, d)
+    orc.run_finished.connect(on_finished, d)
+    orc.run_error.connect(on_error, d)
+
+    _p(f"Задача: {args.task}")
+    _p(f"Проект: {project['name']} ({project['local_path']})")
+    _p(f"Режим: {cfg.orchestration.get('execution_mode')} · участники: "
+       + ", ".join(p.get("short", p["id"]) for p in providers))
+    orc.run()                                   # synchronous, no GUI
+
+    if "error" in state:
+        _p(f"\n✗ Ошибка: {state['error']}")
+        return 1
+    result = state.get("result", {})
+    if args.json:
+        _p(json.dumps({"result": result, "decision": state.get("decision"),
+                       "usage": state.get("usage", {})},
+                      ensure_ascii=False, indent=2))
+    else:
+        _p(f"\n{'═' * 46}\nИтог: {result.get('message', '(нет)')}")
+        if result.get("commit"):
+            _p(f"Коммит: {result['commit']} · ветка: {result.get('branch')}")
+        if result.get("pr_url"):
+            _p(f"PR: {result['pr_url']}")
+    ok = result.get("status") in ("done", "cancelled")
+    return 0 if ok else 1
+
+
+# --------------------------------------------------------------------------
 # council / route / capabilities / reputation
 # --------------------------------------------------------------------------
 
@@ -395,6 +566,26 @@ def build_parser() -> argparse.ArgumentParser:
                    help="живой сквозной тест каждого готового CLI "
                         "(расходует квоту подписки)")
     d.set_defaults(func=cmd_doctor)
+
+    run = sub.add_parser("run", help="полный прогон оркестрации (headless)")
+    run.add_argument("task")
+    run.add_argument("--project", default="",
+                     help="проект (id/имя из конфига или путь; по умолчанию cwd)")
+    run.add_argument("--mode", default="",
+                     choices=["solo", "pair", "adaptive", "full_council"],
+                     help="режим выполнения (иначе — из настроек)")
+    run.add_argument("--providers", default="",
+                     help="ограничить состав: id через запятую")
+    run.add_argument("--yes", action="store_true",
+                     help="публиковать даже при частичной/непройденной "
+                          "верификации или высоком риске")
+    run.add_argument("--push", action="store_true",
+                     help="запушить интеграционную ветку (не целевую)")
+    run.add_argument("--dry-run", action="store_true",
+                     help="показать результат и отклонить публикацию")
+    run.add_argument("--show-diff", action="store_true")
+    run.add_argument("--json", action="store_true")
+    run.set_defaults(func=cmd_run)
 
     c = sub.add_parser("council", help="совет ИИ по вопросу")
     c.add_argument("question")

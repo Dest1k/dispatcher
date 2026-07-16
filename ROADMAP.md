@@ -23,11 +23,13 @@ Covered by `test_persistence.py` / `test_resume.py`.
 Done: per-agent worktrees, enforced path scope, sequential patch integration,
 independent cross-review, safe single-executor fallback, plan validation that
 rejects prefix/glob zone overlaps (not just exact-path collisions), mid-run
-**drop**, opt-in red-team critique of the plan (`council_planning`), and the
+**drop**, opt-in red-team critique of the plan (`council_planning`), the
 standalone multi-round council (`dispatcher council`: proposal → attack →
-feasibility → synthesis). Planned: a validated task DAG scheduler; the full
-multi-round council wired into the *implementation* pipeline; adaptive
-escalation; mid-run **hot-join** of a new agent (currently declined honestly).
+feasibility → synthesis), and **adaptive escalation** (solo attempt →
+escalate to a pair in fresh worktrees on verification failure, feeding the
+failure back). Planned: a validated task DAG scheduler; the multi-round
+council wired into the *implementation* pipeline; mid-run **hot-join** of a
+new agent (currently declined honestly).
 
 ## Phase 4 — Providers & auth ✅ (core)
 Done: dynamic registry, transport/auth/billing model, direct-API + local
@@ -54,8 +56,10 @@ Done: approval dialog with full diff + verification evidence (+ risk); billing
 labels incl. CLI subscriptions; CLI-session provider forms (discovered models,
 per-model efforts, session status, no key fields); integration-branch publish;
 one-click compare/PR URL; run history + event timeline; run recovery; safety
-knobs + budget in settings. Planned: run dashboard (task graph), richer diff
-viewer, API-based draft PR (needs a GitHub token/App), memory-graph browser UI.
+knobs + budget in settings; **headless `dispatcher run`** (full pipeline from
+the terminal with a safe publication-decision policy). Planned: run dashboard
+(task graph), richer diff viewer, API-based draft PR (needs a GitHub token/
+App), memory-graph browser UI.
 
 ## Phase 6 — Docs, packaging, hardening 🚧
 Done: README/ARCHITECTURE/SECURITY/PROVIDERS/AUDIT_REPORT/FINAL_REPORT;
