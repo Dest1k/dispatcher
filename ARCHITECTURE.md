@@ -1,20 +1,34 @@
 # Architecture
 
-Dispatcher is a PySide6 desktop app with a background orchestration engine.
+Dispatcher is a PySide6 desktop app + `dispatcher` console CLI with a
+background orchestration engine and an intelligence layer.
 
 ## Layers
 
 ```
 app/
   config.py            projects + dynamic provider profiles; secret-ref persistence
+  cliagents.py         discovery of official CLIs: install/auth/models/readiness
+  cli.py               `dispatcher` entry: doctor, council, route, capabilities,
+                       reputation, memory, gui
   security/            redaction, path-ownership policy, OS secret store
-  providers/           provider-neutral messages/tools + adapters (anthropic, openai-compat)
-  tools.py             filesystem/command tools, PathPolicy-enforced, sandbox-routed
+  providers/           provider-neutral messages/tools + adapters:
+                       anthropic (REST), openai_compat (REST/SSE),
+                       cli_agent (official CLI sessions: claude/codex/grok)
+  capabilities.py      model capability registry (12 skill axes, provenance)
+  routing.py           explainable task→role→provider routing
+  reputation.py        measured per-agent outcomes -> bounded multiplier
+  council.py           AI council: solo | pair | council | full_council
+  memory_graph.py      per-project knowledge graph (SQLite): decisions/bugs/
+                       lessons + reasoned edges; context_pack() for prompts
+  ledger.py            context-integrity ledger: evidence-backed claims
+  risk.py              deterministic change-risk scoring for the diff
+  tools.py             filesystem/command tools, PathPolicy-enforced, sandboxed
   sandbox.py           command isolation backends (restricted / docker / unsafe_local)
-  workspace.py         per-agent git worktrees + safe integration
+  workspace.py         per-agent git worktrees + safe integration + patch_paths
   verification.py      detect + run project checks -> structured pass/fail/…
-  orchestrator.py      the Run controller (QThread): plan → isolate → integrate → verify → approve → publish
-  git_service.py       read-only git helpers used by the UI (status/clone)
+  orchestrator.py      the Run controller (QThread)
+  persistence.py       SQLite run store (state machine, events, usage, recovery)
   ui/                  main window, chat, agent panels, settings, approval dialog
 ```
 
@@ -25,50 +39,75 @@ task
   │  (Orchestrator.run on a QThread)
   ▼
 prepare workspaces ── refuse if source tree dirty ── record base commit
+  │        ledger: repo / branch / commit / permissions
   ▼
-select team (solo | pair | full_council)  ──►  plan (lead assigns disjoint files)
-  │                                             safe fallback on failure: single executor
+memory_graph.context_pack(project, task) ──► injected into prompts
   ▼
-per implementer: own git worktree  +  PathPolicy(file scope)  +  sandbox
-  │  run_agent tool loop (write/edit/read/run_command/finish)
+select team (solo | pair | council/full_council)  ──►  lead plans (JSON zones)
+  │            optional: red-team critique of the plan (council_planning)
+  │            plan validation (zone overlaps) ── safe fallback: single executor
   ▼
-collect per-agent patch (staged diff vs base, from the isolated worktree)
+per implementer: own git worktree + PathPolicy + sandbox
+  │   API providers → run_agent tool loop (write/edit/read/run_command/finish)
+  │   CLI providers → native_run: the official CLI edits inside the worktree
   ▼
-integration worktree ── apply patches sequentially (git apply --index) ── report conflicts
+collect per-agent patch ── validate patch paths vs PathPolicy (CLI-native
+  │                        enforcement boundary; violations reject the patch)
   ▼
-optional cross-review of the integrated diff (independent reviewer)
+integration worktree ── apply patches sequentially (git apply --index) ── conflicts
   ▼
-verification (detected/configured commands, run in the sandbox) → structured result
+risk.assess_change(diff) ──► explainable risk factors
   ▼
-emit report + diff + evidence ──►  AWAIT human approval  ◄── blocks the run
+optional cross-review (CLI reviewers read the integration tree read-only)
   ▼
-approve → commit integration branch (+ push that branch only, if asked & allowed)
-reject/cancel → discard all worktrees & temp branches; source untouched
+verification (real commands in sandbox) → structured result → ledger: tests
+  │        reputation.record_verification(per implementer)
+  ▼
+report = agents + review + integration + RISK + verification + LEDGER EVIDENCE
+  ▼
+AWAIT human approval ◄── blocks the run
+  │ approve → commit integration branch (+push only that branch if asked)
+  │           reputation: approved; memory: decision node
+  │ reject  → discard worktrees; reputation: rejected; memory: lesson node
+```
+
+## Intelligence data flow
+
+```
+capabilities (priors, provenance)
+      │            reputation (measured, bounded ×0.85..1.15)
+      └────────┬───┘
+               ▼
+routing.route(task) ── explainable RoleAssignments ── council casting
+               ▼
+council: architect → red_team → developer → synthesis (full_council)
+               ▼
+memory_graph: task/decision/lesson/bug nodes + reasoned edges
+ledger: evidence per run → report section + claim checks
 ```
 
 ## Key objects
 
-- **Provider profile** (`config.providers[...]`): `transport`, `auth`,
-  `billing_source`, `model`, `effort`, prices, capabilities.
-- **RunWorkspaces** (`workspace.py`): base commit, per-agent `AgentWorkspace`
-  (path, branch, `PathPolicy`), integration worktree, patch apply, cleanup.
-- **Sandbox** (`sandbox.py`): `run(command, cancel) -> SandboxResult`.
-- **VerificationResult** (`verification.py`): `status`, `checks[]`, `risk`,
-  `blocks_publication()`.
+- **Provider profile** (`config.providers[...]`): `kind` (`anthropic` |
+  `openai` | `cli`), `transport`, `auth` (`api_key` | `none` | `cli_session`),
+  `billing_source`, `model`, `effort`, `cli_flavor`, `cli_native`,
+  `cli_timeout`, prices (API only).
+- **CLIStatus** (`cliagents.py`): installed/version/authenticated/models/
+  efforts/ready — the `dispatcher doctor` payload.
+- **RoutingDecision** (`routing.py`): assignments with scores + explanations.
+- **CouncilResult** (`council.py`): opinions, synthesis, decision_path.
+- **RunWorkspaces** (`workspace.py`): base commit, per-agent worktrees,
+  integration, `patch_paths` for boundary validation.
+- **RiskAssessment** (`risk.py`), **ContextLedger** (`ledger.py`),
+  **MemoryGraph** (`memory_graph.py`), **ReputationStore** (`reputation.py`).
 - **Orchestrator signals**: `plan_ready`, `agent_role`, `agent_event`, `log`,
-  `integration_ready`, `verification_ready`, `report_ready`, `awaiting_approval`,
-  `run_finished`, `run_error`. Controls: `add_steering`, `disable_agent`,
-  `cancel`, `approve(push)`, `reject`.
+  `integration_ready` (+change_risk), `verification_ready`, `report_ready`,
+  `awaiting_approval` (+change_risk), `run_finished`, `run_error`.
 
 ## Threading
 
-The orchestrator is a `QThread`; implementation agents run as worker threads
-inside it, each in its own worktree/sandbox. All UI updates happen on the UI
-thread via queued signals. The run blocks on a threading `Event` at the approval
-gate; the UI resolves it via `approve()/reject()`.
-
-## Planned (not yet built)
-
-A persistent `Run` domain object backed by SQLite with checkpoints and
-restart-resume, a validated task DAG scheduler, and multi-round council review.
-See `ROADMAP.md`.
+The orchestrator is a `QThread`; implementation agents run as worker threads,
+each in its own worktree/sandbox; CLI subprocesses are killed as process trees
+on cancel/timeout. Council (`council.py`) is pure Python — usable headless.
+All UI updates happen on the UI thread via queued signals. The run blocks on a
+threading `Event` at the approval gate.

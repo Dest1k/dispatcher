@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -21,12 +22,14 @@ from .security import register_secret, secret_store
 CONFIG_DIR = Path.home() / ".multi_ai_control_center"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
-# Transports (behind adapters). subscription_agent is a capability-gated
-# boundary for official subscription-backed coding agents (Codex / Claude Agent
-# SDK / xAI) — see PROVIDERS.md; currently marked unavailable.
+# Transports (behind adapters). cli_session drives the official, already
+# authenticated CLI clients (Claude Code / Codex / Grok) as subprocesses — see
+# PROVIDERS.md. subscription_agent remains a capability-gated boundary for
+# other official subscription backends without a local CLI.
 TRANSPORT_ANTHROPIC = "anthropic_messages"
 TRANSPORT_OPENAI = "openai_chat"
 TRANSPORT_LOCAL = "openai_compatible_local"
+TRANSPORT_CLI = "cli_session"
 TRANSPORT_SUBSCRIPTION = "subscription_agent"
 
 # Billing sources — kept distinct from API rate limits and financial budget.
@@ -41,6 +44,86 @@ _PROJECT_SECRET = "github_token"
 
 def _seed_providers() -> dict[str, Any]:
     return {
+        # --- official CLI sessions (subscription; no API keys involved) ----
+        "claude_cli": {
+            "id": "claude_cli",
+            "kind": "cli",
+            "cli_flavor": "claude",
+            "transport": TRANSPORT_CLI,
+            "auth": "cli_session",
+            "billing_source": BILLING_SUBSCRIPTION,
+            "subscription_tier": "Claude Code",
+            "quota_source": "not_exposed",
+            "label": "Claude Code CLI · Opus 4.8",
+            "short": "Claude",
+            "enabled": True,
+            "api_key": "",
+            "model": "claude-opus-4-8",
+            "effort": "max",
+            "base_url": "",
+            "max_tokens": 0,
+            "price_in": 0.0,
+            "price_out": 0.0,
+            "effort_options": ["low", "medium", "high", "xhigh", "max"],
+            "cli_native": True,
+            "cli_timeout": 1200,
+            "accent": "#d97757",
+            "strength": "архитектура, планирование, рефакторинг, ревью",
+            "default_role": "architect",
+        },
+        "codex_cli": {
+            "id": "codex_cli",
+            "kind": "cli",
+            "cli_flavor": "codex",
+            "transport": TRANSPORT_CLI,
+            "auth": "cli_session",
+            "billing_source": BILLING_SUBSCRIPTION,
+            "subscription_tier": "ChatGPT · Codex",
+            "quota_source": "not_exposed",
+            "label": "Codex CLI · GPT-5.6-Sol",
+            "short": "Codex",
+            "enabled": True,
+            "api_key": "",
+            "model": "gpt-5.6-sol",
+            "effort": "ultra",
+            "base_url": "",
+            "max_tokens": 0,
+            "price_in": 0.0,
+            "price_out": 0.0,
+            "effort_options": ["low", "medium", "high", "xhigh", "max", "ultra"],
+            "cli_native": True,
+            "cli_timeout": 1200,
+            "accent": "#10a37f",
+            "strength": "реализация, отладка, тесты, верификация",
+            "default_role": "developer",
+        },
+        "grok_cli": {
+            "id": "grok_cli",
+            "kind": "cli",
+            "cli_flavor": "grok",
+            "transport": TRANSPORT_CLI,
+            "auth": "cli_session",
+            "billing_source": BILLING_SUBSCRIPTION,
+            "subscription_tier": "SuperGrok",
+            "quota_source": "not_exposed",
+            "label": "Grok CLI · Grok 4.5",
+            "short": "Grok",
+            "enabled": True,
+            "api_key": "",
+            "model": "grok-4.5",
+            "effort": "high",
+            "base_url": "",
+            "max_tokens": 0,
+            "price_in": 0.0,
+            "price_out": 0.0,
+            "effort_options": ["low", "medium", "high"],
+            "cli_native": True,
+            "cli_timeout": 1200,
+            "accent": "#6366f1",
+            "strength": "исследование, red team, альтернативные решения",
+            "default_role": "red_team",
+        },
+        # --- direct APIs (per-token billing) --------------------------------
         "anthropic": {
             "id": "anthropic",
             "kind": "anthropic",
@@ -135,14 +218,16 @@ def _seed_providers() -> dict[str, Any]:
 def _default_config() -> dict[str, Any]:
     return {
         "providers": _seed_providers(),
-        "provider_order": ["anthropic", "openai", "xai", "local"],
+        "provider_order": ["claude_cli", "codex_cli", "grok_cli",
+                           "anthropic", "openai", "xai", "local"],
         "orchestration": {
             "mode": "lead",
-            "lead_provider": "anthropic",
+            "lead_provider": "claude_cli",
             "execution_mode": "pair",          # solo | pair | adaptive | full_council
             "auto_push": False,                # SAFETY: never push automatically
             "publish_default": "integration_branch",  # never the target branch
             "require_verification": True,
+            "council_planning": False,         # red-team plan critique (opt-in)
             "max_tool_iterations": 14,          # safer adaptive default
             "budget_usd": 0.0,                   # 0 = no hard cap
             "budget_warn_ratio": 0.8,
@@ -159,7 +244,8 @@ def _default_config() -> dict[str, Any]:
 
 
 # Seed order used only for building defaults; the live order is dynamic.
-PROVIDER_ORDER = ["anthropic", "openai", "xai", "local"]
+PROVIDER_ORDER = ["claude_cli", "codex_cli", "grok_cli",
+                  "anthropic", "openai", "xai", "local"]
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -193,7 +279,17 @@ class Config:
                 cfg = cls(merged)
                 cfg._resolve_secrets()
                 return cfg
-            except (json.JSONDecodeError, OSError):
+            except json.JSONDecodeError:
+                # A corrupt config must not be silently overwritten by the
+                # next save: preserve it for recovery, then start clean.
+                # (Defect found & verified by the AI council, 2026-07-17.)
+                try:
+                    backup = CONFIG_PATH.with_name(
+                        f"config.json.corrupt-{int(time.time())}")
+                    CONFIG_PATH.replace(backup)
+                except OSError:
+                    pass
+            except OSError:
                 pass
         return cls(defaults)
 
@@ -230,8 +326,12 @@ class Config:
             self._persist_field(project, persisted["projects"][i],
                                  _PROJECT_SECRET,
                                  f"project:{project['id']}:{_PROJECT_SECRET}")
-        CONFIG_PATH.write_text(
-            json.dumps(persisted, indent=2, ensure_ascii=False), encoding="utf-8")
+        # Atomic write: temp file + replace, so a crash mid-save can't leave a
+        # truncated config. (Defect found & verified by the AI council.)
+        tmp = CONFIG_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(persisted, indent=2, ensure_ascii=False),
+                       encoding="utf-8")
+        tmp.replace(CONFIG_PATH)
 
     def _persist_field(self, live: dict, persisted: dict, field: str,
                         account: str) -> None:
@@ -336,6 +436,11 @@ class Config:
 
 
 def _has_credentials(p: dict) -> bool:
+    if p.get("auth") == "cli_session":
+        # An official CLI counts as credentialed when it is installed and its
+        # own session files show a completed login. No keys are stored.
+        from . import cliagents
+        return cliagents.quick_ready(p.get("cli_flavor", ""))
     if p.get("auth") == "none":
         return bool(p.get("base_url"))
     return bool(p.get("api_key", "").strip())

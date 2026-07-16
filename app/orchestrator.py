@@ -31,14 +31,18 @@ from PySide6.QtCore import QThread, Signal
 
 from .budget import BudgetGuard
 from .domain import RunState
+from .ledger import ContextLedger
+from .memory_graph import MemoryGraph
 from .persistence import RunStore
 from .providers import Steering, Usage, make_adapter, run_agent
 from .providers.base import Message
+from .reputation import ReputationStore
+from .risk import assess_change
 from .security import redact, register_secret
 from .sandbox import make_sandbox
 from .tools import TOOL_SPECS, ProjectTools
 from .verification import detect_commands, run_verification
-from .workspace import RunWorkspaces, WorkspaceError
+from .workspace import RunWorkspaces, WorkspaceError, patch_paths
 
 _IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
                  "build", ".mypy_cache", ".pytest_cache", ".idea", ".vscode"}
@@ -119,12 +123,17 @@ class Orchestrator(QThread):
     run_finished = Signal(dict)
     run_error = Signal(str)
 
-    def __init__(self, config, project: dict, instruction: str, store=None):
+    def __init__(self, config, project: dict, instruction: str, store=None,
+                 reputation=None, memory=None):
         super().__init__()
         self.config = config
         self.project = project
         self.instruction = instruction
         self.store: RunStore = store or RunStore()
+        self.reputation: ReputationStore = reputation or ReputationStore()
+        self.memory: MemoryGraph = memory or MemoryGraph()
+        self.ledger = ContextLedger()          # re-created with a sink per run
+        self.change_risk = None                # RiskAssessment of the diff
         self.run_id: str | None = None
         self.steering = Steering()
         self.cancel_event = threading.Event()
@@ -246,6 +255,14 @@ class Orchestrator(QThread):
             if kind in ("text", "error", "tool_result", "tool", "thinking",
                         "steering", "delta"):
                 payload = redact(payload)
+            if kind == "tool":
+                # Context-integrity ledger: every tool call is evidence.
+                try:
+                    call = json.loads(payload)
+                    self.ledger.record_tool(pid, call.get("name", ""),
+                                            call.get("args") or {})
+                except Exception:
+                    pass
             if self.run_id and kind in ("tool", "status", "error"):
                 self.store.add_event(self.run_id, f"{pid}.{kind}", payload)
             self.agent_event.emit(pid, kind, payload)
@@ -254,6 +271,18 @@ class Orchestrator(QThread):
 
     def _cfg(self, pid: str) -> dict:
         return next((p for p in self.providers if p["id"] == pid), {"id": pid})
+
+    def _reasoning_adapter(self, provider: dict, workdir: str | None = None):
+        """Adapter for a text-only (planning/review/synthesis) call. CLI
+        providers get the project (or integration) tree as read-only context
+        and honor the run's cancel event."""
+        cfg = dict(provider)
+        if provider.get("kind") == "cli":
+            cfg["workdir"] = workdir or self.project.get("local_path", "")
+        adapter = make_adapter(cfg)
+        if hasattr(adapter, "cancel"):
+            adapter.cancel = self.cancel_event
+        return adapter
 
     def _lead_provider(self) -> dict:
         pref = self.orch.get("lead_provider", "anthropic")
@@ -266,7 +295,7 @@ class Orchestrator(QThread):
         ordered = [lead] + [p for p in active if p["id"] != lead["id"]]
         if len(active) == 1 or mode == "solo":
             return [ordered[0]], None
-        if mode == "full_council":
+        if mode in ("full_council", "council"):
             return active, lead
         # pair / adaptive
         return [ordered[0]], ordered[1]
@@ -283,6 +312,14 @@ class Orchestrator(QThread):
     def _fail(self, message: str) -> None:
         if self.run_id:
             self.store.finish(self.run_id, RunState.FAILED, message)
+        # Project memory: a failed run is a first-class fact.
+        try:
+            self.memory.add_node(
+                self.project.get("id", ""), "bug",
+                f"Сбой прогона: {self.instruction[:150]}",
+                body=message[:1500], run_id=self.run_id or "")
+        except Exception:
+            pass
         self.run_error.emit(message)
         self._safe_cleanup()
 
@@ -314,7 +351,31 @@ class Orchestrator(QThread):
         self.store.set_workspace(self.run_id, str(self.rw.run_dir),
                                  self.rw.integration_branch)
 
+        # Context-integrity ledger: record the ground truth this run sees.
+        run_id = self.run_id
+        self.ledger = ContextLedger(
+            sink=lambda kind, payload: self.store.add_event(
+                run_id, f"evidence.{kind}", payload))
+        self.ledger.record("repo", root)
+        self.ledger.record("branch", self.rw.current_branch() or "(detached)")
+        self.ledger.record("commit", info["base_commit"])
+        self.ledger.record(
+            "permission",
+            f"sandbox={self.orch.get('sandbox_mode', 'restricted')} · "
+            f"network={'on' if self.orch.get('allow_network') else 'off'} · "
+            f"auto_push={'on' if self.orch.get('auto_push') else 'off'}")
+
         context = build_context(root)
+        # Project memory: prior decisions/lessons inform this run's prompts.
+        memory_ctx = ""
+        try:
+            memory_ctx = self.memory.context_pack(
+                self.project.get("id", ""), self.instruction)
+        except Exception:
+            pass
+        if memory_ctx:
+            context = f"{context}\n\n{memory_ctx}"
+            self.log.emit("Память проекта подключена к контексту задачи")
         implementers, reviewer = self._select_team()
         max_iters = int(self.orch.get("max_tool_iterations", 14))
         cap = self.budget.cap
@@ -342,11 +403,15 @@ class Orchestrator(QThread):
         # Integration
         self._ck(RunState.INTEGRATING)
         conflicts = self._integrate(implementers)
+        full_diff = self.rw.integration_diff()
         integ = {
             "changed_files": self.rw.integration_changed_files(),
             "conflicts": conflicts,
-            "diff": self.rw.integration_diff()[:20000],
+            "diff": full_diff[:20000],
         }
+        # Deterministic risk score of the integrated change (explainable).
+        self.change_risk = assess_change(full_diff, integ["changed_files"])
+        integ["change_risk"] = self.change_risk.to_dict()
         self.integration_ready.emit(integ)
 
         # Review (optional)
@@ -356,6 +421,12 @@ class Orchestrator(QThread):
         self._ck(RunState.VERIFYING)
         verification = self._verify(root)
         self._verification = verification.to_dict()
+        self._verification["change_risk"] = self.change_risk.to_dict()
+        for check in verification.checks:
+            self.ledger.record("test", f"{check.name}: {check.status}")
+        passed = verification.status == "pass"
+        for p in implementers:
+            self.reputation.record_verification(p["id"], passed)
         self.verification_ready.emit(self._verification)
 
         # Report (stored as an artifact OUTSIDE the target repo), redacted.
@@ -381,11 +452,14 @@ class Orchestrator(QThread):
             "changed_files": integ["changed_files"],
             "conflicts": conflicts,
             "verification": self._verification,
+            "change_risk": self.change_risk.to_dict(),
         })
 
         # Wait for the human decision.
         self._decision.wait()
-        if self._decision_value.get("action") != "approve":
+        approved = self._decision_value.get("action") == "approve"
+        self._record_outcome(implementers, approved)
+        if not approved:
             self.rw.cleanup()          # discard all worktrees + temp branches
             return self._finish({
                 "status": "cancelled",
@@ -393,6 +467,41 @@ class Orchestrator(QThread):
                 RunState.CANCELLED)
         self._publish(push=self._decision_value.get("push", False),
                       blocked=not can_autopublish)
+
+    def _record_outcome(self, implementers: list[dict], approved: bool) -> None:
+        """Reputation + project-memory bookkeeping. Never breaks the run."""
+        try:
+            for p in implementers:
+                self.reputation.record_review(p["id"], approved)
+                self.reputation.record_task(p["id"], approved)
+        except Exception:
+            pass
+        try:
+            project_id = self.project.get("id", "")
+            names = ", ".join(p.get("short", p["id"]) for p in implementers)
+            task_node = self.memory.add_node(
+                project_id, "task", self.instruction[:200],
+                body=f"Исполнители: {names}. Риск: "
+                     f"{self.change_risk.level if self.change_risk else '—'}.",
+                run_id=self.run_id or "")
+            if approved:
+                decision = self.memory.add_node(
+                    project_id, "decision",
+                    f"Принято: {self.instruction[:150]}",
+                    body=(self._report or "")[:2000], run_id=self.run_id or "")
+                self.memory.add_edge(decision, task_node, "learned_from",
+                                     reason="итог одобренного прогона")
+            else:
+                lesson = self.memory.add_node(
+                    project_id, "lesson",
+                    f"Отклонено: {self.instruction[:150]}",
+                    body="Публикация отклонена человеком. Подход требует "
+                         "пересмотра.\n" + (self._report or "")[:1500],
+                    run_id=self.run_id or "", status="rejected")
+                self.memory.add_edge(lesson, task_node, "learned_from",
+                                     reason="публикацию отклонил человек")
+        except Exception:
+            pass
 
     # ---- planning ---------------------------------------------------
     def _plan(self, context: str, implementers: list[dict]) -> dict[str, dict]:
@@ -417,12 +526,17 @@ class Orchestrator(QThread):
                   '"role": "...", "title": "...", "objective": "...", '
                   '"files": ["путь"]}]}')
         try:
-            result = make_adapter(lead).complete(system, [Message("user", text=prompt)], [])
+            result = self._reasoning_adapter(lead).complete(
+                system, [Message("user", text=prompt)], [])
             self._usage.setdefault(lead["id"], Usage()).add(result.usage)
+            self.ledger.record("provider_call",
+                               f"план: {lead.get('short', lead['id'])}")
             plan = _extract_json(result.text)
         except Exception as exc:
             self.log.emit(f"Планирование не удалось ({exc}) — безопасный откат: один исполнитель.")
             plan = None
+
+        plan = self._council_refine_plan(plan, implementers)
 
         if not plan or "assignments" not in plan:
             # SAFE fallback: a single executor, NOT unsafe full parallelism.
@@ -462,6 +576,44 @@ class Orchestrator(QThread):
                               "assignments": list(merged.values())})
         return merged
 
+    def _council_refine_plan(self, plan: dict | None,
+                             implementers: list[dict]) -> dict | None:
+        """Optional red-team pass over the plan (orchestration flag
+        `council_planning`). The critique is advisory: it is attached to the
+        overview for the human and the implementers; the plan structure is
+        still validated by `validate_assignments` afterwards."""
+        if not plan or "assignments" not in plan \
+                or not self.orch.get("council_planning"):
+            return plan
+        lead = self._lead_provider()
+        critic = next((p for p in self.providers
+                       if p["id"] != lead["id"]
+                       and "red team" in (p.get("strength") or "").lower()),
+                      next((p for p in self.providers if p["id"] != lead["id"]),
+                           None))
+        if critic is None or self.cancel_event.is_set():
+            return plan
+        self.log.emit(f"{critic['short']} проверяет план (red team)…")
+        try:
+            res = self._reasoning_adapter(critic).complete(
+                "Ты — red team. Найди в плане распределения работ слабые места: "
+                "пересечения зон, недостающие шаги, риски. Ответь кратким "
+                "списком по-русски (или «план приемлем»).",
+                [Message("user", text=(
+                    f"Задача:\n{self.instruction}\n\nПлан:\n"
+                    f"{json.dumps(plan, ensure_ascii=False)[:12000]}"))], [])
+            self._usage.setdefault(critic["id"], Usage()).add(res.usage)
+            self.ledger.record("provider_call",
+                               f"критика плана: {critic.get('short')}")
+            note = res.text.strip()
+            if note:
+                plan["overview"] = (plan.get("overview", "")
+                                    + f"\n\n[Критика плана · {critic['short']}]\n"
+                                    + note[:1500])
+        except Exception as exc:
+            self.log.emit(f"Критика плана не удалась ({exc}) — продолжаю без неё.")
+        return plan
+
     # ---- execution --------------------------------------------------
     def _execute(self, implementers, assignments, context) -> dict[str, str]:
         self.assignments = assignments
@@ -494,14 +646,33 @@ class Orchestrator(QThread):
         for t in threads:
             t.join()
 
-        # Collect patches from each isolated worktree.
+        # Collect patches from each isolated worktree. The patch is validated
+        # against the agent's PathPolicy here — the enforcement boundary for
+        # CLI-native agents whose in-worktree edits bypass the tool layer.
         self._patches = {}
         for pid, ws in worktrees.items():
             try:
-                self._patches[pid] = ws.stage_and_diff()
+                patch = ws.stage_and_diff()
             except WorkspaceError as exc:
                 self._patches[pid] = ""
                 self.log.emit(f"Патч {pid} не собран: {exc}")
+                continue
+            touched = patch_paths(patch)
+            violations = [p for p in touched if not ws.policy.can_write(p)]
+            if violations:
+                self._patches[pid] = ""
+                short = self._cfg(pid).get("short", pid)
+                self.log.emit(
+                    f"⛔ Патч {short} отклонён: записи вне зоны ответственности "
+                    f"({', '.join(violations[:5])}). Изменения не попадут в "
+                    "интеграцию.")
+                summaries[pid] = (summaries.get(pid, "") +
+                                  "\n(патч отклонён политикой владения файлами: "
+                                  + ", ".join(violations[:5]) + ")")
+                continue
+            for path in touched:
+                self.ledger.record("file_write", path, agent=pid)
+            self._patches[pid] = patch
         return summaries
 
     def _run_agent_in_worktree(self, provider, assignment, ws, context, summaries):
@@ -514,23 +685,29 @@ class Orchestrator(QThread):
                                allow_network=self.orch.get("allow_network", False),
                                timeout=int(self.orch.get("command_timeout", 300)))
         try:
-            tools = ProjectTools(str(ws.path), policy=ws.policy, sandbox=sandbox,
-                                 cancel=combined)
             files_hint = ", ".join(assignment.get("files") or []) or "(в пределах твоей зоны)"
-            system = (f"Ты — {provider['label']}. Работаешь в СВОЕЙ изолированной "
-                      "копии репозитория. Пиши качественный рабочий код только в "
-                      "своей зоне ответственности; попытки записи вне зоны вернут "
-                      "ошибку. Команды выполняются в песочнице без доступа к "
-                      "секретам и сети. Заверши вызовом finish с кратким отчётом.")
-            initial = Message("user", text=(
-                f"Задача:\n{self.instruction}\n\nТвоя роль: {assignment.get('role')}\n"
-                f"Подзадача: {assignment.get('objective')}\nТвои файлы: {files_hint}\n\n"
-                f"Структура проекта:\n{context}\n\nНачинай."))
-            final = run_agent(make_adapter(provider), system, [initial], TOOL_SPECS,
-                              tools.execute, self.steering, on_event,
-                              int(self.orch.get("max_tool_iterations", 14)),
-                              combined, self._usage[pid],
-                              stream=self.orch.get("stream", False))
+            native = (provider.get("kind") == "cli"
+                      and provider.get("cli_native", True))
+            if native:
+                final = self._run_native_cli(provider, assignment, ws, context,
+                                             files_hint, on_event, combined)
+            else:
+                tools = ProjectTools(str(ws.path), policy=ws.policy,
+                                     sandbox=sandbox, cancel=combined)
+                system = (f"Ты — {provider['label']}. Работаешь в СВОЕЙ изолированной "
+                          "копии репозитория. Пиши качественный рабочий код только в "
+                          "своей зоне ответственности; попытки записи вне зоны вернут "
+                          "ошибку. Команды выполняются в песочнице без доступа к "
+                          "секретам и сети. Заверши вызовом finish с кратким отчётом.")
+                initial = Message("user", text=(
+                    f"Задача:\n{self.instruction}\n\nТвоя роль: {assignment.get('role')}\n"
+                    f"Подзадача: {assignment.get('objective')}\nТвои файлы: {files_hint}\n\n"
+                    f"Структура проекта:\n{context}\n\nНачинай."))
+                final = run_agent(make_adapter(provider), system, [initial], TOOL_SPECS,
+                                  tools.execute, self.steering, on_event,
+                                  int(self.orch.get("max_tool_iterations", 14)),
+                                  combined, self._usage[pid],
+                                  stream=self.orch.get("stream", False))
             summaries[pid] = final
             self.live_ids.discard(pid)
             on_event("status", "отключён" if pid in self.disabled else "готово")
@@ -541,6 +718,50 @@ class Orchestrator(QThread):
             on_event("status", "ошибка")
         finally:
             sandbox.close()
+
+    def _run_native_cli(self, provider, assignment, ws, context, files_hint,
+                        on_event, combined) -> str:
+        """Implementation via the official CLI's own agentic loop, inside the
+        agent's isolated worktree. The CLI edits files itself (acceptEdits /
+        workspace-write confined to the worktree); its patch is validated
+        against the PathPolicy at collection. Mid-run steering can't be
+        injected into a single CLI invocation — pending steering is included
+        up front, later steering applies from the next task."""
+        pending, _ = self.steering.drain_from(0)
+        steer_note = ("\n\nДополнительные указания пользователя:\n"
+                      + "\n".join(pending)) if pending else ""
+        prompt = (
+            f"Задача:\n{self.instruction}\n\n"
+            f"Твоя роль: {assignment.get('role')}\n"
+            f"Подзадача: {assignment.get('objective')}\n"
+            f"Твоя зона файлов: {files_hint}\n\n"
+            "Правила: ты работаешь в изолированной git-копии (worktree) — "
+            "меняй файлы только в своей зоне; НЕ выполняй git commit/push/"
+            "checkout; не трогай файлы секретов. Патч с записями вне зоны "
+            "будет отклонён целиком. В конце дай краткий отчёт: что сделано, "
+            "что не удалось, что проверить.\n\n"
+            f"Структура проекта:\n{context}{steer_note}")
+        adapter = make_adapter(provider)
+        pid = provider["id"]
+        self.ledger.record("provider_call",
+                           f"{provider.get('short', pid)}: "
+                           "native-режим (официальный CLI)", agent=pid)
+
+        def ev(kind: str, payload: str) -> None:
+            if kind == "usage":     # native mode reports usage only via events
+                try:
+                    d = json.loads(payload)
+                    self._usage[pid].add(Usage(int(d.get("in", 0)),
+                                               int(d.get("out", 0))))
+                except (ValueError, TypeError):
+                    pass
+            on_event(kind, payload)
+
+        timeout = int(provider.get("cli_timeout", 1200) or 1200)
+        final = adapter.native_run(prompt, str(ws.path), ev,
+                                   cancel=combined, timeout=timeout)
+        on_event("text", final)
+        return final
 
     # ---- integration ------------------------------------------------
     def _integrate(self, implementers) -> list[dict]:
@@ -563,12 +784,17 @@ class Orchestrator(QThread):
             return "(нет изменений для ревью)"
         self.log.emit(f"{reviewer['short']} проверяет объединённый дифф…")
         system = ("Ты — независимый ревьюер. Проверь дифф на баги, риски и "
-                  "нарушения требований. Кратко перечисли найденное и вердикт.")
+                  "нарушения требований. Кратко перечисли найденное и вердикт. "
+                  "Утверждай только то, что видишь в диффе или файлах.")
         try:
-            res = make_adapter(reviewer).complete(
+            # CLI reviewers get the *integration* tree as read-only context.
+            res = self._reasoning_adapter(
+                reviewer, workdir=str(self.rw.integration_path)).complete(
                 system, [Message("user", text=f"Задача:\n{self.instruction}\n\n"
                                               f"Дифф:\n{diff[:16000]}")], [])
             self._usage.setdefault(reviewer["id"], Usage()).add(res.usage)
+            self.ledger.record("provider_call",
+                               f"ревью: {reviewer.get('short')}")
             self.agent_event.emit(reviewer["id"], "text", res.text[:1500])
             return res.text
         except Exception as exc:
@@ -598,19 +824,27 @@ class Orchestrator(QThread):
         budget_note = ("\n> ⚠ Прогон был плавно остановлен по достижении бюджета "
                        f"${self.budget.cap:.2f} (израсходовано ${self.budget.total:.4f}).\n"
                        if self.budget_event.is_set() else "")
+        risk_md = (self.change_risk.describe() if self.change_risk
+                   else "Риск изменений: не оценивался")
         base = (
             f"# Отчёт по задаче\n\n**Задача:** {self.instruction}\n{budget_note}\n"
             f"## Что сделали исполнители\n{agent_parts}\n\n"
             f"## Ревью\n{review_notes or '(без ревью)'}\n\n"
             f"## Интеграция\nИзменённые файлы: "
             f"{', '.join(integ['changed_files']) or 'нет'}\n\nКонфликты:\n{conflicts}\n\n"
+            f"## Риск изменений\n{risk_md}\n\n"
             f"## Верификация — статус: **{verification.status}** (риск: {verification.risk})\n"
-            f"{vlines}\n")
-        # Optional lead synthesis on top (best-effort).
+            f"{vlines}\n\n"
+            f"{self.ledger.summary_md()}\n")
+        # Optional lead synthesis on top (best-effort). The synthesis prompt is
+        # evidence-aware: the lead may only claim what the ledger backs.
         try:
-            res = make_adapter(lead).complete(
+            res = self._reasoning_adapter(lead).complete(
                 "Ты — ведущий архитектор. Сделай краткое резюме (2-4 предложения) "
-                "по результатам работы, честно отметив риски и что НЕ проверено.",
+                "по результатам работы, честно отметив риски и что НЕ проверено. "
+                "Опирайся только на факты из отчёта и раздела свидетельств "
+                "(ledger); не утверждай, что что-то проверено, если свидетельств "
+                "нет.",
                 [Message("user", text=base[:14000])], [])
             self._usage.setdefault(lead["id"], Usage()).add(res.usage)
             if res.text.strip():

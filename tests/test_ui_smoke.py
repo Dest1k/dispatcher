@@ -14,8 +14,11 @@ def test_window_builds_empty(window):
     assert window.project_name.text() == "Нет проекта"
 
 
-def test_panels_follow_available_providers(window):
+def test_panels_follow_available_providers(window, monkeypatch):
+    import app.cliagents as ca
     win = window
+    # deterministic: pretend no CLI session exists on this machine
+    monkeypatch.setattr(ca, "quick_ready", lambda flavor, home=None: False)
     win.config.providers["anthropic"]["api_key"] = "sk-test"
     win.config.save()
     win.config.add_project("Demo", "/tmp/demo-x", "o/r",
@@ -24,6 +27,10 @@ def test_panels_follow_available_providers(window):
     assert win.project_name.text() == "Demo"
     # available = has credentials: anthropic (key) + local (auth=none). Not openai/xai.
     assert set(win.agent_panels.keys()) == {"anthropic", "local"}
+    # a ready CLI session makes its provider available without any key
+    monkeypatch.setattr(ca, "quick_ready", lambda flavor, home=None: True)
+    win._refresh_projects()
+    assert {"claude_cli", "codex_cli", "grok_cli"} <= set(win.agent_panels.keys())
 
 
 def test_settings_dialog_dynamic_tabs(qapp, tmp_config):
@@ -56,6 +63,54 @@ def test_agent_panel_shows_billing(qapp, tmp_config):
     assert "SuperGrok" in grok.name_label.text()
     local = AgentPanel(cfg.providers["local"])
     assert "локально" in local.name_label.text()
+    claude_cli = AgentPanel(cfg.providers["claude_cli"])
+    assert "Claude Code" in claude_cli.name_label.text()   # subscription label
+
+
+def test_cli_provider_form_has_no_key_field(qapp, tmp_config, monkeypatch):
+    import app.cliagents as ca
+    from app.cliagents import CLIStatus
+    from app.config import Config, _default_config
+    from app.ui.settings_dialog import ProviderForm
+
+    ready = CLIStatus(flavor="claude", title="Claude Code CLI")
+    ready.binary, ready.installed, ready.authenticated = "/bin/claude", True, True
+    ready.auth_source = "сессия Claude Code"
+    monkeypatch.setattr(ca, "detect",
+                        lambda flavor, home=None, run_commands=True: ready)
+    monkeypatch.setattr(
+        ca, "discover_models",
+        lambda flavor, home=None: (["claude-opus-4-8", "opus", "sonnet"],
+                                   {"*": ["low", "high", "max"]}, "тест"))
+    cfg = Config(_default_config())
+    form = ProviderForm(cfg.providers["claude_cli"])
+    assert form.api_key is None                      # no key UI for CLI session
+    assert "Сессия официального CLI" in form.session_label.text()
+    # model dropdown carries the discovered models; the seed default selected
+    models = [form.model.itemText(i) for i in range(form.model.count())]
+    assert "claude-opus-4-8" in models and "sonnet" in models
+    assert form.model.currentText() == "claude-opus-4-8"
+    # effort options follow the discovered levels + independent choice
+    efforts = [form.effort.itemText(i) for i in range(form.effort.count())]
+    assert "max" in efforts
+    collected = form.collect()
+    assert collected["api_key"] == ""                # nothing sneaks in
+    assert collected["model"] == "claude-opus-4-8"
+
+
+def test_settings_save_keeps_cli_fields(qapp, tmp_config, monkeypatch):
+    import app.cliagents as ca
+    monkeypatch.setattr(ca, "quick_ready", lambda flavor, home=None: False)
+    from app.config import Config, _default_config
+    from app.ui.settings_dialog import SettingsDialog
+    cfg = Config(_default_config())
+    dlg = SettingsDialog(cfg)
+    dlg.council_planning.setChecked(True)
+    dlg._save()
+    assert cfg.orchestration["council_planning"] is True
+    assert cfg.providers["codex_cli"]["effort"] == "ultra"
+    assert cfg.providers["codex_cli"]["auth"] == "cli_session"
+    dlg.close()
 
 
 def test_no_autoping_on_startup(window, monkeypatch):

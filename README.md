@@ -1,132 +1,157 @@
-# Dispatcher
+# Dispatcher — AI Engineering Command Center
 
-A desktop control plane (Python + PySide6) that coordinates AI coding agents
-over your repositories with **isolation, technically-enforced file ownership,
-sandboxed command execution, deterministic verification, and an explicit human
-approval gate** before anything is committed or pushed.
+A desktop + CLI control plane (Python, PySide6) that coordinates **multiple
+specialized AI agents** over your repositories with isolation, technically
+enforced file ownership, sandboxed commands, deterministic verification, an
+explicit human approval gate — and an intelligence layer (capability registry,
+explainable routing, agent reputation, project memory graph, context-integrity
+ledger, AI council).
 
-Dispatcher can drive:
+```
+                         USER
+                          │
+                  DISPATCHER CORE
+        (routing · council · memory · ledger · risk)
+                          │
+        ┌─────────────────┼─────────────────┐
+   ARCHITECT           CODER            RED TEAM / REVIEW
+   Claude Code CLI     Codex CLI        Grok CLI
+   (Opus 4.8 · max)    (GPT-5.6-Sol ·   (Grok 4.5 · high)
+                        ultra)
+                          │
+                 VALIDATION PIPELINE
+          (integration → review → verification → risk)
+                          │
+                   HUMAN APPROVAL
+                          │
+                        MERGE
+```
 
-- **direct provider APIs** (Anthropic Messages, OpenAI Chat Completions, and any
-  OpenAI-compatible endpoint);
-- **local OpenAI-compatible models** (e.g. vLLM) with no API billing;
-- one, two, or many agents — the provider/agent list is dynamic, not a fixed set.
+## Providers: your existing CLI sessions, no API keys required
 
-It is Windows-first and also runs on Linux and macOS.
+Dispatcher's primary transport is **`cli_session`**: it drives the official,
+already installed and already logged-in CLI clients as subprocesses — exactly
+what happens when you run them by hand. It does **not** ask for API keys, does
+not create or copy credentials, and never scrapes cookies. Billing is your
+existing subscription.
 
-> This project began as a three-model "control center" prototype. It has been
-> redesigned into a safety-first orchestration layer. The documentation below
-> describes what the code actually does today; see `ROADMAP.md` and
-> `IMPLEMENTATION_STATUS.md` for what is implemented vs planned.
+| Agent | CLI | Default model / effort | Default role |
+|---|---|---|---|
+| Claude | Claude Code CLI (`claude`) | `claude-opus-4-8` / `max` | architect, refactoring, review |
+| Codex | OpenAI Codex CLI (`codex`) | `gpt-5.6-sol` / `ultra` | implementation, debugging, tests |
+| Grok | Grok CLI (`grok`) | `grok-4.5` / `high` | research, red team, alternatives |
 
----
+Models and efforts are **per-participant choices**: available models are
+discovered from each CLI's own local cache (`~/.codex/models_cache.json`,
+`~/.grok/models_cache.json`, built-in registry for Claude) and editable in
+Settings or config.
 
-## Safety model (why this is not "three bots editing one folder")
+Direct APIs (Anthropic / OpenAI / xAI / any OpenAI-compatible endpoint,
+including local vLLM) remain fully supported as separate provider profiles
+with per-token billing — see `PROVIDERS.md`.
+
+## Quick start
+
+Requires Python 3.10+ and git. For CLI providers: the official CLIs installed
+and logged in (`claude`, `codex login`, `grok login`).
+
+```bash
+pip install -e .
+dispatcher doctor          # what is installed, logged in, which models exist
+dispatcher                 # GUI (or: python run.py)
+```
+
+```
+$ dispatcher doctor
+Claude Code CLI (Anthropic)
+  установлен:       да (…\npm\claude.CMD)
+  версия:           2.1.211 (Claude Code)
+  аутентификация:   да — сессия Claude Code (~/.claude/.credentials.json)
+  модель:           claude-opus-4-8 (effort: max)
+  доступные модели: claude-opus-4-8, opus, sonnet, haiku
+  статус:           ГОТОВ
+…
+Готово к работе: 3 из 3
+```
+
+`dispatcher doctor --probe` performs one real round-trip through every ready
+CLI (clearly labeled: it spends subscription quota).
+
+## The AI Council
+
+```bash
+dispatcher council "стоит ли переходить на event sourcing?"                 # independent opinions + synthesis
+dispatcher council "..." --mode solo|pair|council|full_council
+dispatcher route  "Refactor authentication system"                          # explainable role routing
+dispatcher capabilities                                                     # what each model is good at
+dispatcher reputation                                                       # measured outcomes per agent
+dispatcher memory list|show|add|pack                                        # project memory graph
+```
+
+`full_council` runs the reasoning pipeline: **architect proposal → red-team
+attack → implementation feasibility → lead synthesis**, with role casting by
+the routing engine and a decision trace in the result. Council answers are
+stored in the project memory graph and in `~/.multi_ai_control_center/reports/`.
+
+## Intelligence layer
+
+- **Capability registry** (`app/capabilities.py`) — 12 skill axes per model
+  family (coding, architecture, debugging, research, red_team, …), recorded as
+  expert priors with provenance; unknown models honestly get a neutral profile.
+- **Adaptive routing** (`app/routing.py`) — task classification (RU/EN) +
+  role-weighted capability scores × bounded reputation multiplier; every
+  assignment carries a human-readable explanation; council roles stay distinct.
+- **Reputation** (`app/reputation.py`) — measured per-provider outcomes
+  (tasks, verifications, human approvals, rollbacks) with Laplace smoothing,
+  bounded to ×[0.85..1.15] so priors are tuned, never overridden.
+- **Project memory graph** (`app/memory_graph.py`) — SQLite graph of decisions
+  / bugs / solutions / approaches / lessons with *reasoned* edges
+  (`solved_by`, `rejected_for`, …). Run outcomes are recorded automatically;
+  a compact digest is injected into agent prompts.
+- **Context-integrity ledger** (`app/ledger.py`) — evidence (files read/
+  written, commands, tests, provider calls, permissions) recorded per run;
+  reports contain a machine-generated evidence section, and claim checks block
+  wording like "inspected the repository" without backing evidence.
+- **Change risk scoring** (`app/risk.py`) — deterministic, explainable factors
+  (sensitive paths, diff size, deletions, code-without-tests) shown in the
+  report and the approval dialog.
+
+## Safety model
 
 | Concern | What Dispatcher does |
 |---|---|
-| Shared writable repo | Each agent works in its **own git worktree** created from a recorded base commit. Agents never share a writable tree. |
-| File ownership | A `PathPolicy` **technically enforces** each agent's allowed paths (deny/read-only globs, symlink & junction escape blocked). Out-of-scope writes return a structured tool error. |
-| Command execution | Commands run in a **sandbox**: the host environment is *not* inherited (so provider keys/tokens are absent), a throwaway HOME, process-group termination, hard timeout, output redaction. Backends: restricted (default), Docker (one container per command, no socket, `--network none`, resource caps), or an opt-in, clearly-flagged unsafe-local mode. |
-| Git safety | The source working tree is never modified. Runs are blocked if it is dirty. Accepted work is applied as reviewed patches into an **integration branch** with explicit staging — no `git add -A` on your repo, no branch reset, no force-push. `auto_push` defaults to **off**. |
-| Verification | A real **verification stage** (detected or configured commands) runs before publication. `fail`/`unknown`/`cancelled` **blocks** automatic publication. |
-| Human approval | You see the **full diff + verification evidence** and approve/reject. Publishing pushes only the integration branch — never directly into your target branch. |
-| Recoverability | After any cancelled or failed run, the original repository is untouched and fully recoverable. |
-| Secrets | API keys and tokens live in the **OS secret store** (keyring); only references are written to config. Logs/reports/UI are redacted. |
+| Shared writable repo | Each agent works in its **own git worktree** from a recorded base commit. |
+| File ownership | `PathPolicy` enforces allowed/deny/read-only paths. API agents are blocked at write time; CLI-native agents are validated at the **integration boundary** — a patch touching files outside the agent's zone is rejected whole. |
+| Command execution | Sandboxed (no host env/secrets, throwaway HOME, kill-on-timeout; optional Docker). CLI-native mode uses the official CLI's own guardrails confined to the worktree (Claude/Grok `acceptEdits`, Codex `workspace-write`). |
+| Git safety | Source tree never modified; dirty tree blocks the run; integration via explicit staged patches into a dedicated branch; no `git add -A`, no reset, no force push; `auto_push` off by default. |
+| Verification | Real commands with structured results; fail/unknown/cancelled **blocks** publication. |
+| Human approval | Full diff + verification evidence + **risk assessment** + ledger before anything is committed. |
+| Secrets | API keys (only for direct-API profiles) live in the OS keyring; logs redacted. CLI sessions stay inside the official clients — Dispatcher never reads or copies them. |
 
----
+## Documentation
 
-## Providers and billing
-
-Each agent shows its provider, model, **transport**, **auth**, and **billing
-source** so they are never conflated:
-
-- **Direct API** — billed per-token by the provider (Anthropic, OpenAI, xAI).
-- **Subscription** — e.g. **Grok on SuperGrok**. The programmatic call still uses
-  an xAI API key, but the account is on a subscription pool; Dispatcher labels it
-  `Grok · SuperGrok` and marks its quota **"not exposed by provider"** rather than
-  inventing a number.
-- **Local** — an OpenAI-compatible endpoint such as vLLM: no API billing.
-
-**Rate limits, subscription quotas, and financial budgets are shown as separate
-concepts** — a rate-limit header is never labeled as "remaining subscription
-allowance". Rate-limit windows are read from real responses; a manual refresh is
-available and is clearly marked as a billable request (no automatic paid pings).
-
-Official **subscription-backed coding agents** (Codex / Claude Agent SDK / xAI
-build agents) are represented behind a capability-gated transport boundary and
-are currently **marked unavailable** — Dispatcher does not scrape cookies,
-automate consumer web apps, or emulate unsupported auth. See `PROVIDERS.md`.
-
----
-
-## Install & run
-
-Requires Python 3.10+ and git.
-
-```bash
-pip install -e .            # or: pip install -r requirements.txt
-pip install keyring        # recommended: store secrets in the OS keychain
-python run.py
-```
-
-On Linux, Qt may need: `sudo apt install libegl1 libgl1 libxkbcommon0 libdbus-1-3`.
-For the Docker sandbox backend, Docker Desktop / WSL2 is required (otherwise
-Dispatcher falls back to the restricted local sandbox and says so).
-
-### First run
-
-1. **⚙ Settings** → add an API key for each provider you want (one is enough).
-   Adjust model/effort as needed; defaults are factual, not "maxed" presets.
-2. **＋ New project** → point at a local git repo and (optionally) its GitHub
-   remote and branch. Optionally set per-project verification commands.
-3. Type a task, send it, watch each agent work in its isolated worktree, then
-   review the diff + verification and **approve or reject**.
-
----
-
-## Windows / Docker / WSL2
-
-- Windows is a first-class target; packaging via PyInstaller (`build.spec`).
-- The Docker sandbox mounts only the agent worktree, no home, no docker socket,
-  `--network none` by default, with CPU/memory/pids limits.
-- WSL2 is a supported host for Docker Desktop.
-- The restricted local sandbox does not hard-block network without a Linux
-  network namespace; use the Docker backend for strict network isolation. See
-  `SECURITY.md`.
-
----
+- `ARCHITECTURE.md` — layers, run flow, intelligence modules.
+- `PROVIDERS.md` — transports (incl. `cli_session`), billing, models/efforts.
+- `SECURITY.md` — threat model; what is enforced vs best-effort.
+- `AUDIT_REPORT.md` / `FINAL_REPORT.md` — аудит и итоговый отчёт (RU).
+- `ROADMAP.md` / `IMPLEMENTATION_STATUS.md` — phases and current status.
 
 ## Tests
 
-No test requires a paid API — providers are mocked.
+No test performs real network calls or spawns real CLIs — subprocesses and
+HTTP are mocked; detection is driven off fake home dirs.
 
 ```bash
 pip install pytest
 python -m pytest -q
 ```
 
-Coverage includes security (redaction, path policy, secret store), git
-workspace isolation & safe integration, sandbox env-scrubbing/timeout/cancel,
-verification status, provider/billing model, UI construction, and an
-end-to-end orchestrator run proving the source tree is untouched until approval.
+## Known limitations
 
----
-
-## Documentation
-
-- `ARCHITECTURE.md` — layers, run flow, modules.
-- `SECURITY.md` — threat model, sandbox model, what is enforced vs best-effort.
-- `PROVIDERS.md` — transports, billing sources, local vLLM, subscription agents.
-- `MIGRATION.md` — config migration and secret migration behavior.
-- `DEVELOPMENT.md` — setup, tests, packaging, code structure.
-- `ROADMAP.md` / `IMPLEMENTATION_STATUS.md` — phases and current status.
-
-## Known limitations (see ROADMAP.md)
-
-- Persistent, restart-resumable runs (SQLite) are **not yet** implemented; a run
-  lives for the app session.
-- Multi-round "council" (proposal → critique → …) beyond the isolation +
-  integration + review primitives is planned.
-- Docker container-per-agent for the *implementation* step (not just commands)
-  and official subscription-agent transports require further work / credentials.
+- A single CLI invocation can't accept mid-run steering; steering queued
+  before start is included, later steering applies from the next task.
+- Subscription quotas are not exposed by the CLIs; Dispatcher shows honest
+  "not exposed" instead of inventing numbers. Token usage is reported only
+  where the CLI provides it (Claude does; Codex/Grok show 0).
+- Headless `dispatcher run` (full orchestration without GUI) is not yet
+  wired; the council/routing/doctor commands are headless today.

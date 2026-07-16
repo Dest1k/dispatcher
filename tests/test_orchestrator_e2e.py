@@ -92,7 +92,9 @@ def _make_config(monkeypatch, tmp_path, active_ids=("anthropic", "openai")):
     monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "cfg")
     monkeypatch.setattr(cfgmod, "CONFIG_PATH", tmp_path / "cfg" / "config.json")
     cfg = cfgmod.Config(cfgmod._default_config())
-    for pid in ("anthropic", "openai", "xai", "local"):
+    for pid in list(cfg.providers):
+        # disable everything not explicitly requested — incl. CLI providers,
+        # which would otherwise activate on dev machines with real CLIs
         cfg.providers[pid]["enabled"] = pid in active_ids
         if pid in active_ids and cfg.providers[pid]["auth"] == "api_key":
             cfg.providers[pid]["api_key"] = "k"

@@ -186,16 +186,47 @@ def test_git_readonly_helpers(has_git, git_repo):
 
 
 # ---- config ----------------------------------------------------------
-def test_config_defaults(tmp_config):
+def test_config_defaults(tmp_config, monkeypatch):
+    import app.cliagents as cliagents
+    # Deterministic regardless of what is installed on the dev machine.
+    monkeypatch.setattr(cliagents, "quick_ready", lambda flavor, home=None: False)
     cfg = Config(_default_config())
-    # Dynamic provider list (not hardcoded to three): 4 seeded profiles.
-    assert len(cfg.ordered_providers()) == 4
-    # No API keys yet; the local (auth=none) profile counts as available.
+    # Dynamic provider list: 3 CLI-session + 3 API + 1 local seeded profiles.
+    assert len(cfg.ordered_providers()) == 7
+    # No API keys and no CLI sessions; local (auth=none) counts as available.
     assert len(cfg.active_providers()) == 0
     assert {p["id"] for p in cfg.available_providers()} == {"local"}
     cfg.providers["anthropic"]["api_key"] = "k"
     assert {p["id"] for p in cfg.available_providers()} == {"anthropic", "local"}
     assert [p["id"] for p in cfg.active_providers()] == ["anthropic"]
+    # CLI providers activate when their official CLI session is ready.
+    monkeypatch.setattr(cliagents, "quick_ready", lambda flavor, home=None: True)
+    assert {p["id"] for p in cfg.active_providers()} == {
+        "claude_cli", "codex_cli", "grok_cli", "anthropic"}
+
+
+def test_corrupt_config_backed_up_not_silently_reset(tmp_config):
+    """Defect found & verified by the AI council: a broken config.json was
+    silently replaced by defaults on the next save. Now it is preserved."""
+    cfgmod = tmp_config
+    cfgmod.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    cfgmod.CONFIG_PATH.write_text("{broken json!!", encoding="utf-8")
+    cfg = Config.load()
+    assert cfg.data["orchestration"]["auto_push"] is False   # defaults loaded
+    assert not cfgmod.CONFIG_PATH.exists()                   # moved aside…
+    backups = list(cfgmod.CONFIG_DIR.glob("config.json.corrupt-*"))
+    assert backups and "broken json" in backups[0].read_text(encoding="utf-8")
+
+
+def test_config_save_is_atomic(tmp_config):
+    cfgmod = tmp_config
+    cfg = Config(_default_config())
+    cfg.save()
+    assert cfgmod.CONFIG_PATH.exists()
+    assert not cfgmod.CONFIG_PATH.with_suffix(".tmp").exists()
+    import json as _json
+    data = _json.loads(cfgmod.CONFIG_PATH.read_text(encoding="utf-8"))
+    assert "providers" in data
 
 
 def test_provider_billing_model(tmp_config):
@@ -205,3 +236,22 @@ def test_provider_billing_model(tmp_config):
     assert cfg.providers["local"]["billing_source"] == "local"
     assert cfg.providers["anthropic"]["billing_source"] == "api"
     assert cfg.orchestration["auto_push"] is False
+
+
+def test_cli_providers_seeded_with_user_defaults(tmp_config):
+    cfg = Config(_default_config())
+    claude = cfg.providers["claude_cli"]
+    codex = cfg.providers["codex_cli"]
+    grok = cfg.providers["grok_cli"]
+    # Defaults per the product spec: Opus 4.8 max / GPT-5.6-Sol ultra /
+    # Grok 4.5 high; models and efforts stay editable per participant.
+    assert (claude["model"], claude["effort"]) == ("claude-opus-4-8", "max")
+    assert (codex["model"], codex["effort"]) == ("gpt-5.6-sol", "ultra")
+    assert (grok["model"], grok["effort"]) == ("grok-4.5", "high")
+    for p in (claude, codex, grok):
+        assert p["auth"] == "cli_session"
+        assert p["billing_source"] == "subscription"
+        assert p["transport"] == "cli_session"
+        assert p["api_key"] == ""          # no keys involved, ever
+        assert len(p["effort_options"]) >= 3
+    assert cfg.orchestration["lead_provider"] == "claude_cli"

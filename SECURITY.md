@@ -38,6 +38,34 @@ Dispatcher's job is to contain the blast radius.
 - **Redaction** (`app/security/redact.py`): known key/token shapes and registered
   secret values are masked in command output, reports, and UI event streams.
 
+## CLI-native agents (`cli_session` transport)
+
+Official CLI agents (Claude Code / Codex / Grok) edit files with their **own**
+tools inside the agent's isolated worktree, so Dispatcher's write-time
+`PathPolicy` hook does not see those writes. The containment story is:
+
+- the worktree boundary still holds — the CLI's working directory is the
+  throwaway worktree, never your source tree;
+- Claude/Grok run under `acceptEdits` (file edits confined to the working
+  directory; shell commands are auto-denied headless); Codex runs under its
+  official `workspace-write` sandbox;
+- **enforcement moves to the integration boundary**: the collected patch's
+  paths are validated against the agent's `PathPolicy` (including the global
+  secret-file deny list); a patch touching anything outside the agent's zone
+  is rejected whole and reported;
+- reasoning-only calls (planning/council/review) disable mutating tools and,
+  for Codex, use the read-only sandbox;
+- Dispatcher never reads, copies or stores the CLIs' session credentials — it
+  only observes that the official client has a login and spawns it the way the
+  user would.
+
+Residual risk (accepted, documented): a CLI agent could run `git` inside its
+own worktree via its native tooling (Codex sandbox permits commands). Branch
+state of that throwaway worktree is irrelevant to integration — patches are
+collected as `diff --cached` against the recorded base and the source tree
+stays untouched; worktree checkouts of user branches are prevented by git
+itself (a branch checked out elsewhere cannot be checked out again).
+
 ## Best-effort (not a hard guarantee in the default backend)
 
 - **Network isolation** in the *restricted local* sandbox: applied only when a

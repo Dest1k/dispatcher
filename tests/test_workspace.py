@@ -84,6 +84,45 @@ def test_sequential_integration_no_add_all(has_git, git_repo, tmp_path):
     assert not any(br.startswith("dispatcher/") for br in remaining)
 
 
+def test_patch_paths_extraction():
+    from app.workspace import patch_paths
+    patch = (
+        "diff --git a/app/main.py b/app/main.py\n"
+        "--- a/app/main.py\n+++ b/app/main.py\n@@ -1 +1 @@\n-x\n+y\n"
+        "diff --git a/new file.txt b/new file.txt\n"
+        "--- /dev/null\n+++ b/new file.txt\n@@ -0,0 +1 @@\n+hello\n"
+        "diff --git a/gone.py b/gone.py\n"
+        "--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n")
+    paths = patch_paths(patch)
+    assert "app/main.py" in paths
+    assert "new file.txt" in paths
+    assert "gone.py" in paths
+    assert "/dev/null" not in paths
+    assert patch_paths("") == []
+
+
+def test_patch_policy_boundary_catches_out_of_zone(has_git, git_repo, tmp_path):
+    """The integration-boundary check used for CLI-native agents: a patch
+    touching files outside the agent's zone is detectable via PathPolicy."""
+    from app.workspace import patch_paths
+    rw = RunWorkspaces(str(git_repo), runs_root=tmp_path / "runs")
+    rw.prepare()
+    ws = rw.create_agent_worktree("agentA", allowed_paths=["app/**"],
+                                  denied=[".env", "secrets/*"])
+    # the "CLI" edits files directly, bypassing the tool layer
+    (ws.path / "app").mkdir()
+    (ws.path / "app" / "ok.py").write_text("fine\n")
+    (ws.path / "rogue.txt").write_text("outside the zone\n")
+    (ws.path / ".env").write_text("SECRET=1\n")
+    patch = ws.stage_and_diff()
+    touched = patch_paths(patch)
+    violations = [p for p in touched if not ws.policy.can_write(p)]
+    assert "rogue.txt" in violations
+    assert ".env" in violations
+    assert "app/ok.py" not in violations
+    rw.cleanup()
+
+
 def test_conflicting_patches_reported(has_git, git_repo, tmp_path):
     rw = RunWorkspaces(str(git_repo), runs_root=tmp_path / "runs")
     rw.prepare()

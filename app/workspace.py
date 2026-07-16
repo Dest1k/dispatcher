@@ -155,7 +155,9 @@ class RunWorkspaces:
         if not patch_text.endswith("\n"):
             patch_text += "\n"
         patch_file = self.run_dir / f"patch-{uuid.uuid4().hex[:8]}.diff"
-        patch_file.write_text(patch_text, encoding="utf-8")
+        # newline="\n": patch bytes must be verbatim — the platform-default
+        # newline translation (CRLF on Windows) corrupts context matching.
+        patch_file.write_text(patch_text, encoding="utf-8", newline="\n")
         code, out = _git_ok(["apply", "--index", "--3way", str(patch_file)],
                             str(self.integration_path))
         if code != 0:
@@ -213,6 +215,28 @@ class RunWorkspaces:
             if branch not in keep:
                 _git_ok(["branch", "-D", branch], self.repo_root)
         shutil.rmtree(self.run_dir, ignore_errors=True)
+
+
+def patch_paths(patch_text: str) -> list[str]:
+    """File paths touched by a unified diff (b/ side, plus a/ for deletions).
+
+    Used to validate a collected patch against the agent's PathPolicy at the
+    integration boundary — the enforcement point for CLI-native agents whose
+    in-worktree writes bypass the tool layer.
+    """
+    paths: set[str] = set()
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git "):
+            body = line[len("diff --git "):]
+            # `diff --git a/path b/path`; paths with spaces stay intact
+            # because both sides are equal-length prefixed forms.
+            if body.startswith("a/") and " b/" in body:
+                a_part, b_part = body.split(" b/", 1)
+                paths.add(a_part[2:].strip().strip('"'))
+                paths.add(b_part.strip().strip('"'))
+        elif line.startswith(("+++ b/", "--- a/")):
+            paths.add(line[6:].strip().strip('"'))
+    return sorted(p for p in paths if p and p != "/dev/null")
 
 
 def _authed_remote(github_url: str, token: str) -> str:

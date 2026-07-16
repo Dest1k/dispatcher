@@ -22,39 +22,49 @@ Covered by `test_persistence.py` / `test_resume.py`.
 ## Phase 3 — Isolated multi-agent orchestration ◐
 Done: per-agent worktrees, enforced path scope, sequential patch integration,
 independent cross-review, safe single-executor fallback, plan validation that
-rejects prefix/glob zone overlaps (not just exact-path collisions), and mid-run
-**drop**: disabling a live agent cancels only it and reassigns its work to
-exactly one remaining agent. Planned: a validated task DAG scheduler
-(cycles/overlap/budget checks); multi-round council (independent proposals →
-critique → plan → implement → cross-review → integrate → verify → synthesize);
-adaptive escalation; mid-run **hot-join** of a new agent (currently declined
-honestly — a safe late-join needs a fresh isolated worktree with a disjoint
-ownership zone and re-planning, so the model participates from the next task).
+rejects prefix/glob zone overlaps (not just exact-path collisions), mid-run
+**drop**, opt-in red-team critique of the plan (`council_planning`), and the
+standalone multi-round council (`dispatcher council`: proposal → attack →
+feasibility → synthesis). Planned: a validated task DAG scheduler; the full
+multi-round council wired into the *implementation* pipeline; adaptive
+escalation; mid-run **hot-join** of a new agent (currently declined honestly).
 
-## Phase 4 — Providers & auth ◐
+## Phase 4 — Providers & auth ✅ (core)
 Done: dynamic registry, transport/auth/billing model, direct-API + local
-(vLLM) adapters, capability-gated `subscription_agent` boundary (unavailable),
-transient retry/backoff (Retry-After), per-run budget enforcement + forecast,
-SSE streaming for **both** OpenAI-compatible and Anthropic adapters (text
-deltas; tool-use/thinking round-trip; cancel closes the connection), versioned
-source-dated model capability catalog. Planned: official subscription-agent
-adapters where supported; Responses-API adapters; Docker container-per-agent for
-the implementation step.
+(vLLM) adapters, transient retry/backoff (Retry-After), per-run budget
+enforcement + forecast, SSE streaming for both OpenAI-compatible and Anthropic
+adapters, versioned source-dated model catalog — **and the `cli_session`
+transport**: official Claude Code / Codex / Grok CLIs driven through the
+user's existing logins (no API keys), with CLI discovery (`dispatcher
+doctor`), model/effort discovery from the CLIs' local caches, reasoning +
+native-worktree modes, patch-boundary policy enforcement, timeouts and
+process-tree cancel. Planned: Responses-API adapters; Docker
+container-per-agent for the implementation step.
+
+## Phase 4.5 — Intelligence layer ✅ (v3)
+Capability registry (12 axes, provenance) → explainable routing (RU/EN task
+classification, role scores, distinct council roles) → measured reputation
+(bounded multiplier) → AI council (solo/pair/council/full_council) → project
+memory graph (reasoned edges, prompt digest) → context-integrity ledger
+(evidence-backed claims) → deterministic change-risk scoring in the approval
+flow.
 
 ## Phase 5 — UI & publication ◐
-Done: approval dialog with full diff + verification evidence; billing/limit
-labels; integration-branch publish; one-click compare/PR URL; run history +
-event timeline; run recovery; safety knobs + budget in settings; secret-store
-status. Planned: a richer run dashboard (task graph, artifacts), richer diff
-viewer, API-based draft PR (needs a GitHub token/App).
+Done: approval dialog with full diff + verification evidence (+ risk); billing
+labels incl. CLI subscriptions; CLI-session provider forms (discovered models,
+per-model efforts, session status, no key fields); integration-branch publish;
+one-click compare/PR URL; run history + event timeline; run recovery; safety
+knobs + budget in settings. Planned: run dashboard (task graph), richer diff
+viewer, API-based draft PR (needs a GitHub token/App), memory-graph browser UI.
 
 ## Phase 6 — Docs, packaging, hardening 🚧
-Done: README/ARCHITECTURE/SECURITY/PROVIDERS/MIGRATION/DEVELOPMENT/ROADMAP;
-Windows PyInstaller spec; GitHub Actions CI (offscreen pytest); 100-test suite.
-Planned: broader tests, dead-code sweeps.
+Done: README/ARCHITECTURE/SECURITY/PROVIDERS/AUDIT_REPORT/FINAL_REPORT;
+Windows PyInstaller spec; GitHub Actions CI (offscreen pytest); 180-test suite
+(no network, no real CLI spawns). Planned: broader tests, dead-code sweeps.
 
 ## Requires external credentials / provider support
-- Official subscription-backed agent transports (Codex / Claude Agent SDK / xAI).
 - Draft-PR creation (GitHub token or App installation).
 - Strict network isolation in the default sandbox (needs Docker/WSL2 or a Linux
   network namespace).
+- Headless `dispatcher run` (full orchestration without GUI) — needs the
+  orchestrator decoupled from QThread.

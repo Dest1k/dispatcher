@@ -7,7 +7,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from ..config import PROVIDER_ORDER
 from ..providers import make_adapter
 
 
@@ -15,6 +14,7 @@ class ProviderForm(QWidget):
     def __init__(self, provider: dict):
         super().__init__()
         self.provider = provider
+        self.is_cli = provider.get("kind") == "cli"
         form = QFormLayout(self)
         form.setSpacing(10)
 
@@ -22,64 +22,102 @@ class ProviderForm(QWidget):
         self.enabled.setChecked(provider.get("enabled", True))
         form.addRow(self.enabled)
 
-        self.api_key = QLineEdit(provider.get("api_key", ""))
-        self.api_key.setEchoMode(QLineEdit.Password)
-        self.api_key.setPlaceholderText("API-ключ")
-        key_row = QHBoxLayout()
-        key_row.addWidget(self.api_key, 1)
-        self.show_key = QPushButton("👁")
-        self.show_key.setObjectName("IconBtn")
-        self.show_key.setCheckable(True)
-        self.show_key.toggled.connect(
-            lambda on: self.api_key.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
-        key_row.addWidget(self.show_key)
-        key_wrap = QWidget()
-        key_wrap.setLayout(key_row)
-        form.addRow("API-ключ", key_wrap)
+        self.api_key = None
+        if self.is_cli:
+            # Official CLI session — no keys are requested or stored.
+            self.session_label = QLabel(self._session_text())
+            self.session_label.setWordWrap(True)
+            form.addRow("Авторизация", self.session_label)
+        else:
+            self.api_key = QLineEdit(provider.get("api_key", ""))
+            self.api_key.setEchoMode(QLineEdit.Password)
+            self.api_key.setPlaceholderText("API-ключ")
+            key_row = QHBoxLayout()
+            key_row.addWidget(self.api_key, 1)
+            self.show_key = QPushButton("👁")
+            self.show_key.setObjectName("IconBtn")
+            self.show_key.setCheckable(True)
+            self.show_key.toggled.connect(
+                lambda on: self.api_key.setEchoMode(
+                    QLineEdit.Normal if on else QLineEdit.Password))
+            key_row.addWidget(self.show_key)
+            key_wrap = QWidget()
+            key_wrap.setLayout(key_row)
+            form.addRow("API-ключ", key_wrap)
 
-        self.model = QLineEdit(provider.get("model", ""))
-        form.addRow("Модель", self.model)
+        if self.is_cli:
+            # Model choice from the CLI's own local cache (editable: any id).
+            self.model = QComboBox()
+            self.model.setEditable(True)
+            self._cli_efforts: dict[str, list[str]] = {}
+            self._populate_cli_models()
+            form.addRow("Модель", self.model)
+        else:
+            self.model = QLineEdit(provider.get("model", ""))
+            form.addRow("Модель", self.model)
 
         self.catalog_label = QLabel("")
         self.catalog_label.setObjectName("Meta")
         self.catalog_label.setWordWrap(True)
-        self.model.textChanged.connect(self._update_catalog)
+        if self.is_cli:
+            self.model.currentTextChanged.connect(self._update_catalog)
+        else:
+            self.model.textChanged.connect(self._update_catalog)
         form.addRow("", self.catalog_label)
         self._update_catalog()
 
         self.effort = QComboBox()
-        self.effort.addItems(provider.get("effort_options", []) + ["none"])
-        current = provider.get("effort", "")
-        idx = self.effort.findText(current)
-        if idx >= 0:
-            self.effort.setCurrentIndex(idx)
+        self._populate_efforts(self._model_text())
+        if self.is_cli:
+            self.model.currentTextChanged.connect(self._populate_efforts)
         form.addRow("Effort / уровень рассуждений", self.effort)
 
-        self.base_url = QLineEdit(provider.get("base_url", ""))
-        form.addRow("Base URL", self.base_url)
+        self.base_url = None
+        self.max_tokens = None
+        self.price_in = self.price_out = None
+        if not self.is_cli:
+            self.base_url = QLineEdit(provider.get("base_url", ""))
+            form.addRow("Base URL", self.base_url)
 
-        self.max_tokens = QSpinBox()
-        self.max_tokens.setRange(256, 128000)
-        self.max_tokens.setSingleStep(1000)
-        self.max_tokens.setValue(int(provider.get("max_tokens", 16000)))
-        form.addRow("Max tokens (на ответ)", self.max_tokens)
+            self.max_tokens = QSpinBox()
+            self.max_tokens.setRange(256, 128000)
+            self.max_tokens.setSingleStep(1000)
+            self.max_tokens.setValue(int(provider.get("max_tokens", 16000)))
+            form.addRow("Max tokens (на ответ)", self.max_tokens)
 
-        price_row = QHBoxLayout()
-        self.price_in = QDoubleSpinBox()
-        self.price_in.setRange(0, 1000)
-        self.price_in.setDecimals(2)
-        self.price_in.setValue(float(provider.get("price_in", 0)))
-        self.price_out = QDoubleSpinBox()
-        self.price_out.setRange(0, 1000)
-        self.price_out.setDecimals(2)
-        self.price_out.setValue(float(provider.get("price_out", 0)))
-        price_row.addWidget(QLabel("вход $/1M"))
-        price_row.addWidget(self.price_in)
-        price_row.addWidget(QLabel("выход $/1M"))
-        price_row.addWidget(self.price_out)
-        price_wrap = QWidget()
-        price_wrap.setLayout(price_row)
-        form.addRow("Цена", price_wrap)
+            price_row = QHBoxLayout()
+            self.price_in = QDoubleSpinBox()
+            self.price_in.setRange(0, 1000)
+            self.price_in.setDecimals(2)
+            self.price_in.setValue(float(provider.get("price_in", 0)))
+            self.price_out = QDoubleSpinBox()
+            self.price_out.setRange(0, 1000)
+            self.price_out.setDecimals(2)
+            self.price_out.setValue(float(provider.get("price_out", 0)))
+            price_row.addWidget(QLabel("вход $/1M"))
+            price_row.addWidget(self.price_in)
+            price_row.addWidget(QLabel("выход $/1M"))
+            price_row.addWidget(self.price_out)
+            price_wrap = QWidget()
+            price_wrap.setLayout(price_row)
+            form.addRow("Цена", price_wrap)
+        else:
+            billing = QLabel("Оплата: включено в подписку "
+                             f"({provider.get('subscription_tier') or 'CLI'}). "
+                             "Квота подпиской не раскрывается — Dispatcher не "
+                             "выдумывает остаток.")
+            billing.setWordWrap(True)
+            billing.setObjectName("Meta")
+            form.addRow("Биллинг", billing)
+
+            self.cli_timeout = QSpinBox()
+            self.cli_timeout.setRange(60, 14400)
+            self.cli_timeout.setSuffix(" с")
+            self.cli_timeout.setValue(int(provider.get("cli_timeout", 1200)))
+            self.cli_timeout.setToolTip(
+                "Максимум на один вызов CLI; максимальные уровни рассуждений "
+                "могут думать долго.")
+            form.addRow("Таймаут вызова CLI", self.cli_timeout)
 
         test_row = QHBoxLayout()
         self.test_btn = QPushButton("Проверить подключение")
@@ -91,6 +129,48 @@ class ProviderForm(QWidget):
         test_wrap = QWidget()
         test_wrap.setLayout(test_row)
         form.addRow("", test_wrap)
+
+    # ---- CLI-session helpers -------------------------------------------
+    def _session_text(self) -> str:
+        from ..cliagents import detect
+        st = detect(self.provider.get("cli_flavor", ""), run_commands=False)
+        if not st.installed:
+            return ("✗ CLI не установлен — установи официальный клиент и "
+                    "выполни вход. Ключи не нужны.")
+        if st.authenticated is True:
+            return f"✔ Сессия официального CLI: {st.auth_source}"
+        return (f"⚠ CLI установлен ({st.binary}), но вход не выполнен — "
+                "запусти его и авторизуйся. Ключи не нужны.")
+
+    def _model_text(self) -> str:
+        return (self.model.currentText() if self.is_cli
+                else self.model.text()).strip()
+
+    def _populate_cli_models(self) -> None:
+        from ..cliagents import discover_models
+        models, efforts, _src = discover_models(self.provider.get("cli_flavor", ""))
+        self._cli_efforts = efforts
+        current = self.provider.get("model", "")
+        items = list(dict.fromkeys(([current] if current else []) + models))
+        self.model.addItems(items)
+        if current:
+            self.model.setCurrentText(current)
+
+    def _populate_efforts(self, model_text: str = "") -> None:
+        current = (self.effort.currentText()
+                   or self.provider.get("effort", ""))
+        options = None
+        if self.is_cli:
+            options = (self._cli_efforts.get(model_text.strip())
+                       or self._cli_efforts.get("*"))
+        if not options:
+            options = self.provider.get("effort_options", [])
+        self.effort.blockSignals(True)
+        self.effort.clear()
+        self.effort.addItems(list(options) + ["none"])
+        idx = self.effort.findText(current)
+        self.effort.setCurrentIndex(idx if idx >= 0 else 0)
+        self.effort.blockSignals(False)
 
     def _test(self) -> None:
         self.test_result.setText("проверяю…")
@@ -109,21 +189,31 @@ class ProviderForm(QWidget):
             self.test_btn.setEnabled(True)
 
     def _update_catalog(self) -> None:
-        from ..catalog import describe
-        self.catalog_label.setText("ℹ " + describe(self.model.text().strip()))
+        model = self._model_text()
+        if self.is_cli:
+            from ..capabilities import describe
+            self.catalog_label.setText("ℹ " + describe(model))
+        else:
+            from ..catalog import describe
+            self.catalog_label.setText("ℹ " + describe(model))
 
     def collect(self) -> dict:
         updated = dict(self.provider)
         updated.update({
             "enabled": self.enabled.isChecked(),
-            "api_key": self.api_key.text().strip(),
-            "model": self.model.text().strip(),
+            "model": self._model_text(),
             "effort": self.effort.currentText(),
-            "base_url": self.base_url.text().strip(),
-            "max_tokens": self.max_tokens.value(),
-            "price_in": self.price_in.value(),
-            "price_out": self.price_out.value(),
         })
+        if self.is_cli:
+            updated["cli_timeout"] = self.cli_timeout.value()
+        else:
+            updated.update({
+                "api_key": self.api_key.text().strip(),
+                "base_url": self.base_url.text().strip(),
+                "max_tokens": self.max_tokens.value(),
+                "price_in": self.price_in.value(),
+                "price_out": self.price_out.value(),
+            })
         return updated
 
 
@@ -155,8 +245,10 @@ class SettingsDialog(QDialog):
 
         self.tabs = QTabWidget()
         self.forms: dict[str, ProviderForm] = {}
-        for pid in PROVIDER_ORDER:
-            provider = config.providers[pid]
+        for pid in config.provider_order():
+            provider = config.providers.get(pid)
+            if provider is None:
+                continue
             form = ProviderForm(provider)
             self.forms[pid] = form
             self.tabs.addTab(form, provider["short"])
@@ -172,11 +264,13 @@ class SettingsDialog(QDialog):
         orch_form.addRow("Режим", self.mode)
 
         self.lead = QComboBox()
-        for pid in PROVIDER_ORDER:
+        order = [pid for pid in config.provider_order()
+                 if pid in config.providers]
+        for pid in order:
             self.lead.addItem(config.providers[pid]["short"], pid)
-        li = PROVIDER_ORDER.index(o.get("lead_provider", "anthropic")) \
-            if o.get("lead_provider") in PROVIDER_ORDER else 0
-        self.lead.setCurrentIndex(li)
+        lead_pid = o.get("lead_provider", "claude_cli")
+        self.lead.setCurrentIndex(order.index(lead_pid)
+                                  if lead_pid in order else 0)
         orch_form.addRow("Ведущая модель", self.lead)
 
         self.execution_mode = QComboBox()
@@ -208,6 +302,12 @@ class SettingsDialog(QDialog):
         self.require_verification = QCheckBox("Требовать верификацию перед публикацией")
         self.require_verification.setChecked(o.get("require_verification", True))
         orch_form.addRow(self.require_verification)
+
+        self.council_planning = QCheckBox(
+            "Совет по плану: red team критикует план перед выполнением "
+            "(+1 вызов модели)")
+        self.council_planning.setChecked(o.get("council_planning", False))
+        orch_form.addRow(self.council_planning)
 
         self.budget_usd = QDoubleSpinBox()
         self.budget_usd.setRange(0.0, 10000.0)
@@ -295,6 +395,7 @@ class SettingsDialog(QDialog):
             "sandbox_mode": self.sandbox_mode.currentData(),
             "allow_network": self.allow_network.isChecked(),
             "require_verification": self.require_verification.isChecked(),
+            "council_planning": self.council_planning.isChecked(),
             "budget_usd": self.budget_usd.value(),
             "stream": self.stream.isChecked(),
             "auto_push": self.auto_push.isChecked(),

@@ -36,6 +36,8 @@ def _orc(tmp_path, monkeypatch, token):
     monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "cfg")
     monkeypatch.setattr(cfgmod, "CONFIG_PATH", tmp_path / "cfg" / "config.json")
     cfg = cfgmod.Config(cfgmod._default_config())
+    for pid in list(cfg.providers):
+        cfg.providers[pid]["enabled"] = pid == "anthropic"
     cfg.providers["anthropic"]["api_key"] = "k"
     project = {"id": "p1", "name": "Demo", "local_path": str(tmp_path),
                "github_repo": "o/r", "github_url": "https://github.com/o/r.git",

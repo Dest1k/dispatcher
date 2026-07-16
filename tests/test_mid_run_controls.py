@@ -16,7 +16,7 @@ def _orc(tmp_path, monkeypatch, active_ids=("anthropic", "openai", "xai")):
     monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "cfg")
     monkeypatch.setattr(cfgmod, "CONFIG_PATH", tmp_path / "cfg" / "config.json")
     cfg = cfgmod.Config(cfgmod._default_config())
-    for pid in ("anthropic", "openai", "xai", "local"):
+    for pid in list(cfg.providers):
         cfg.providers[pid]["enabled"] = pid in active_ids
         if pid in active_ids and cfg.providers[pid]["auth"] == "api_key":
             cfg.providers[pid]["api_key"] = "k"

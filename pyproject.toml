@@ -13,7 +13,7 @@ secrets = ["keyring>=24.0.0"]
 dev = ["pytest>=7.4.0"]
 
 [project.scripts]
-dispatcher = "run:main"
+dispatcher = "app.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -21,4 +21,4 @@ addopts = "-q"
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.setuptools]
-packages = ["app"]
+packages = ["app", "app.providers", "app.security", "app.ui"]
