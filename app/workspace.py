@@ -22,10 +22,17 @@ class WorkspaceError(RuntimeError):
     pass
 
 
+# Decode git output as UTF-8 with byte-exact round-trip. Without an explicit
+# encoding, subprocess uses the locale codec (e.g. cp1251 on Windows), which
+# corrupts non-ASCII patch content — the mangled context then fails to apply.
+# surrogateescape makes patch text round-trip any bytes losslessly.
+_DEC = {"encoding": "utf-8", "errors": "surrogateescape"}
+
+
 def _git(args: list[str], cwd: str, timeout: int = 180) -> str:
     try:
         proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
-                              text=True, timeout=timeout)
+                              text=True, timeout=timeout, **_DEC)
     except FileNotFoundError as exc:
         raise WorkspaceError("git не найден") from exc
     except subprocess.TimeoutExpired as exc:
@@ -39,14 +46,15 @@ def _git_raw(args: list[str], cwd: str, timeout: int = 180) -> str:
     """Like _git but does NOT strip output — required for patch text, whose
     trailing newline is significant to `git apply`."""
     proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
-                          text=True, timeout=timeout)
+                          text=True, timeout=timeout, **_DEC)
     if proc.returncode != 0:
         raise WorkspaceError((proc.stderr or proc.stdout or "git error").strip())
     return proc.stdout or ""
 
 
 def _git_ok(args: list[str], cwd: str) -> tuple[int, str]:
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                          text=True, **_DEC)
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -157,7 +165,10 @@ class RunWorkspaces:
         patch_file = self.run_dir / f"patch-{uuid.uuid4().hex[:8]}.diff"
         # newline="\n": patch bytes must be verbatim — the platform-default
         # newline translation (CRLF on Windows) corrupts context matching.
-        patch_file.write_text(patch_text, encoding="utf-8", newline="\n")
+        # surrogateescape mirrors how the patch text was decoded, so any bytes
+        # (e.g. non-UTF-8 file content) are written back exactly.
+        patch_file.write_text(patch_text, encoding="utf-8",
+                              errors="surrogateescape", newline="\n")
         code, out = _git_ok(["apply", "--index", "--3way", str(patch_file)],
                             str(self.integration_path))
         if code != 0:

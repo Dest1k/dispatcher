@@ -201,6 +201,8 @@ def cmd_run(args) -> int:
         return 1
     if args.mode:
         cfg.orchestration["execution_mode"] = args.mode
+    if args.deliberate:
+        cfg.orchestration["deliberate"] = True
     if args.providers:
         # honor an explicit subset by disabling the rest for this run
         wanted = {p["id"] for p in providers}
@@ -213,6 +215,19 @@ def cmd_run(args) -> int:
 
     def log(msg: str) -> None:
         _p(msg)
+
+    def on_deliberation(result: dict) -> None:
+        _p("\n── Обсуждение совета ──")
+        for op in result.get("opinions", []):
+            role = op.get("role", "")
+            head = op.get("label", op.get("provider", ""))
+            if op.get("error"):
+                _p(f"  • {head} ({role}): ⚠ {op['error'][:200]}")
+            else:
+                _p(f"  • {head} ({role}): {op.get('text', '')[:300].strip()}")
+        if result.get("synthesis"):
+            _p(f"\n  Синтез ({result.get('synthesis_by', '')}):\n"
+               f"  {result['synthesis'][:800].strip()}")
 
     def on_plan(plan: dict) -> None:
         _p("\n── План ──")
@@ -269,6 +284,7 @@ def cmd_run(args) -> int:
 
     d = Qt.DirectConnection
     orc.log.connect(log, d)
+    orc.deliberation_ready.connect(on_deliberation, d)
     orc.plan_ready.connect(on_plan, d)
     orc.agent_event.connect(on_agent, d)
     orc.integration_ready.connect(on_integration, d)
@@ -574,6 +590,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--mode", default="",
                      choices=["solo", "pair", "adaptive", "full_council"],
                      help="режим выполнения (иначе — из настроек)")
+    run.add_argument("--deliberate", action="store_true",
+                     help="сначала совет согласует подход "
+                          "(архитектор → red team → осуществимость → синтез)")
     run.add_argument("--providers", default="",
                      help="ограничить состав: id через запятую")
     run.add_argument("--yes", action="store_true",

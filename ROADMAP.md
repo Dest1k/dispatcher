@@ -25,11 +25,13 @@ independent cross-review, safe single-executor fallback, plan validation that
 rejects prefix/glob zone overlaps (not just exact-path collisions), mid-run
 **drop**, opt-in red-team critique of the plan (`council_planning`), the
 standalone multi-round council (`dispatcher council`: proposal → attack →
-feasibility → synthesis), and **adaptive escalation** (solo attempt →
-escalate to a pair in fresh worktrees on verification failure, feeding the
-failure back). Planned: a validated task DAG scheduler; the multi-round
-council wired into the *implementation* pipeline; mid-run **hot-join** of a
-new agent (currently declined honestly).
+feasibility → synthesis), **adaptive escalation** (solo attempt → escalate to
+a pair in fresh worktrees on verification failure, feeding the failure back),
+and a **council deliberation phase** (`deliberate`) that agrees an approach —
+architect → red-team → feasibility → synthesis — *before* implementation and
+injects it into the planner and implementers. Planned: a validated task DAG
+scheduler; a configurable escalation ladder (solo → pair → full_council);
+mid-run **hot-join** of a new agent (currently declined honestly).
 
 ## Phase 4 — Providers & auth ✅ (core)
 Done: dynamic registry, transport/auth/billing model, direct-API + local

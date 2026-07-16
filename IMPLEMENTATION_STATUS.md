@@ -11,7 +11,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 0 | Audit + committed pytest baseline | ✅ done |
 | 1 | Critical safety (git, isolation, secrets, verification, honest UI) | ✅ done (core) |
 | 2 | Persistent run engine (SQLite, state machine, checkpoints, resume) | ✅ done |
-| 3 | Isolated multi-agent orchestration (worktrees, DAG, review, integrate) | ◐ isolation+integration+review+plan-validation+safe fallback+mid-run disable+plan red-team critique+standalone multi-round council done; council-in-implementation-pipeline & DAG planned |
+| 3 | Isolated multi-agent orchestration (worktrees, DAG, review, integrate) | ◐ isolation+integration+review+plan-validation+safe fallback+mid-run disable+plan red-team critique+standalone council+adaptive escalation+council deliberation feeding the pipeline done; task-DAG scheduler & configurable escalation ladder planned |
 | 4 | Provider/auth backends (transports, billing, local vLLM, **CLI sessions**) | ✅ core: registry+billing+local+API+retry/backoff+SSE+`cli_session` (claude/codex/grok через существующие логины, doctor, discovery моделей, native-режим, patch-boundary policy) |
 | 4.5 | Intelligence layer (v3) | ✅ capabilities+routing+reputation+council+memory graph+ledger+risk |
 | 5 | UI + publication (dashboard, diff, approvals, draft PR) | ◐ approval+diff+evidence+risk+billing labels+CLI-session forms+safety knobs+run-recovery done; run dashboard + 1-click PR planned |
@@ -47,7 +47,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 24 | Draft PR after approval | ✅ push integration branch + one-click "compare/PR" URL; API PR creation optional (token/App) |
 | 25 | Reports stored consistently; no `.gitignore` contradiction | ✅ |
 | 26 | UI doesn't claim raw chain-of-thought | ✅ |
-| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (193 tests) |
+| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (198 tests) |
 | 28 | README describes only real functionality | ✅ |
 | 29 | User config migratable without losing projects | ✅ |
 | 30 | Original repo recoverable after failed/cancelled run | ✅ |
@@ -111,6 +111,12 @@ Test suite 77 → 100.
 - **Adaptive escalation**: `execution_mode: adaptive` runs a solo attempt and,
   on a failed verification, escalates to a pair in fresh isolated worktrees,
   feeding the failure summary back as steering, then retries once.
+- **Council deliberation phase** (`deliberate`): before any file is touched the
+  council agrees an approach — architect proposal → red-team attack →
+  feasibility → synthesis (reasoning-only, no writes) — which is injected into
+  the planner and every implementer's context, recorded in the memory graph as
+  an `approach` node, and shown in the report. `deliberation_ready` signal,
+  `--deliberate` flag on `dispatcher run`, a Settings checkbox.
 - Live validation on this machine: `doctor` 3/3 ready; `--probe` round-trips
   pong via claude (3.2 s), codex (11.4 s), grok (3.5 s); a live
   `full_council` ran the whole architect→red-team→feasibility→synthesis
@@ -118,17 +124,16 @@ Test suite 77 → 100.
   reset of corrupt config) — both fixed with regression tests; a live headless
   `dispatcher run` over the real Claude CLI created a file in an isolated
   worktree and the dry-run left the source repo completely untouched.
-- Test suite 100 → 193 (still no network, no real CLI spawns in tests; the
+- Test suite 100 → 198 (still no network, no real CLI spawns in tests; the
   new run/escalation e2e tests use real git with mocked providers/verification).
 
 ## Where to continue next
 
-1. Wire the multi-round council into the implementation pipeline (council
-   verdict → plan → implement → cross-review), reusing `council.py`.
-2. Extend adaptive escalation beyond one step (solo → pair → full_council) and
+1. Extend adaptive escalation beyond one step (solo → pair → full_council) and
    make the escalation ladder configurable.
-3. Docker container-per-agent for the implementation step; richer run
+2. Docker container-per-agent for the implementation step; richer run
    dashboard / task-graph view; API-based draft PR (needs GitHub token/App);
    memory-graph browser in the UI.
-4. A validated task-DAG scheduler (dependencies/cycles/budget) above the
+3. A validated task-DAG scheduler (dependencies/cycles/budget) above the
    current disjoint-zones planner.
+4. Fully decouple the orchestrator from QThread (server use without PySide6).

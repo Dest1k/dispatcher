@@ -309,6 +309,12 @@ class SettingsDialog(QDialog):
         self.council_planning.setChecked(o.get("council_planning", False))
         orch_form.addRow(self.council_planning)
 
+        self.deliberate = QCheckBox(
+            "Обсуждение подхода советом до реализации "
+            "(архитектор → red team → осуществимость → синтез)")
+        self.deliberate.setChecked(o.get("deliberate", False))
+        orch_form.addRow(self.deliberate)
+
         self.budget_usd = QDoubleSpinBox()
         self.budget_usd.setRange(0.0, 10000.0)
         self.budget_usd.setDecimals(2)
@@ -396,6 +402,7 @@ class SettingsDialog(QDialog):
             "allow_network": self.allow_network.isChecked(),
             "require_verification": self.require_verification.isChecked(),
             "council_planning": self.council_planning.isChecked(),
+            "deliberate": self.deliberate.isChecked(),
             "budget_usd": self.budget_usd.value(),
             "stream": self.stream.isChecked(),
             "auto_push": self.auto_push.isChecked(),

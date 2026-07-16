@@ -228,6 +228,7 @@ def _default_config() -> dict[str, Any]:
             "publish_default": "integration_branch",  # never the target branch
             "require_verification": True,
             "council_planning": False,         # red-team plan critique (opt-in)
+            "deliberate": False,               # council agrees an approach first
             "max_tool_iterations": 14,          # safer adaptive default
             "budget_usd": 0.0,                   # 0 = no hard cap
             "budget_warn_ratio": 0.8,

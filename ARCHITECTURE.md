@@ -43,6 +43,10 @@ prepare workspaces ── refuse if source tree dirty ── record base commit
   ▼
 memory_graph.context_pack(project, task) ──► injected into prompts
   ▼
+optional deliberation (deliberate): council agrees an approach BEFORE writes —
+  architect proposal → red-team attack → feasibility → synthesis (reasoning-only)
+  → approach injected into planning + implementer context, recorded in memory
+  ▼
 select team (solo | pair | adaptive | council/full_council) ──► lead plans (JSON zones)
   │            optional: red-team critique of the plan (council_planning)
   │            plan validation (zone overlaps) ── safe fallback: single executor
@@ -101,9 +105,10 @@ ledger: evidence per run → report section + claim checks
   integration, `patch_paths` for boundary validation.
 - **RiskAssessment** (`risk.py`), **ContextLedger** (`ledger.py`),
   **MemoryGraph** (`memory_graph.py`), **ReputationStore** (`reputation.py`).
-- **Orchestrator signals**: `plan_ready`, `agent_role`, `agent_event`, `log`,
-  `integration_ready` (+change_risk), `verification_ready`, `report_ready`,
-  `awaiting_approval` (+change_risk), `run_finished`, `run_error`.
+- **Orchestrator signals**: `deliberation_ready`, `plan_ready`, `agent_role`,
+  `agent_event`, `log`, `integration_ready` (+change_risk),
+  `verification_ready`, `report_ready`, `awaiting_approval` (+change_risk),
+  `run_finished`, `run_error`.
 
 ## Threading
 

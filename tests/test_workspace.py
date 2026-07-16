@@ -101,6 +101,51 @@ def test_patch_paths_extraction():
     assert patch_paths("") == []
 
 
+def test_patch_with_non_ascii_context_applies(has_git, tmp_path):
+    """Regression: git output was decoded with the locale codec (cp1251 on
+    Windows), which mojibake'd non-ASCII patch *context*, so modifying an
+    existing file with Cyrillic content failed integration with
+    'patch failed: <file>:1'. A new file (ASCII) slipped through. Byte-exact
+    UTF-8 decoding fixes it. Surfaced by a live `dispatcher run` on a README
+    containing Russian text."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)
+
+    g("init", "-q")
+    g("config", "user.email", "t@t")
+    g("config", "user.name", "t")
+    g("config", "core.autocrlf", "true")          # mimic the Windows default
+    (repo / "README.md").write_text(
+        "# Проект\n\nОписание репозитория.\n", encoding="utf-8", newline="")
+    g("add", "-A")
+    g("commit", "-qm", "init")
+
+    rw = RunWorkspaces(str(repo), runs_root=tmp_path / "runs")
+    rw.prepare()
+    ws = rw.create_agent_worktree("agentA")
+    p = ws.path / "README.md"
+    text = p.read_text(encoding="utf-8")           # CRLF→\n via universal newlines
+    p.write_text(text.rstrip("\n") + "\n\n## Статус\n\nв разработке\n",
+                 encoding="utf-8", newline="\n")
+    patch = ws.stage_and_diff()
+    assert "Статус" in patch and "Описание репозитория" in patch  # not corrupted
+
+    rw.create_integration_worktree()
+    ok, msg = rw.apply_patch(patch)
+    assert ok, msg                                 # was False before the fix
+    assert "README.md" in rw.integration_changed_files()
+    sha = rw.commit_integration("integrate cyrillic")
+    assert sha
+    show = subprocess.run(
+        ["git", "show", f"{rw.integration_branch}:README.md"], cwd=str(repo),
+        capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    assert "## Статус" in show and "в разработке" in show
+    rw.cleanup()
+
+
 def test_patch_policy_boundary_catches_out_of_zone(has_git, git_repo, tmp_path):
     """The integration-boundary check used for CLI-native agents: a patch
     touching files outside the agent's zone is detectable via PathPolicy."""

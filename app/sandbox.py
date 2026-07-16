@@ -70,8 +70,11 @@ class _BaseSandbox:
 
     # shared kill + wait loop --------------------------------------
     def _spawn(self, args: list[str], env: dict) -> subprocess.Popen:
+        # Explicit UTF-8 so non-ASCII command output isn't mojibake'd by the
+        # locale codec (cp1251 on Windows) in verification reports / the UI.
         kwargs: dict = dict(cwd=self.workdir, env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True)
+                            stderr=subprocess.STDOUT, text=True,
+                            encoding="utf-8", errors="replace")
         if _IS_WIN:
             kwargs["creationflags"] = 0x00000200  # CREATE_NEW_PROCESS_GROUP
         else:

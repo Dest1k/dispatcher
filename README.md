@@ -86,6 +86,7 @@ agents, with no GUI:
 
 ```bash
 dispatcher run "Refactor the database layer" --mode adaptive
+dispatcher run "..." --deliberate              # council agrees an approach first
 dispatcher run "..." --project <path|id>  --providers claude_cli,codex_cli
 dispatcher run "..." --dry-run --show-diff     # run everything, publish nothing
 dispatcher run "..." --push                    # push the integration branch (never the target)
@@ -96,7 +97,10 @@ dispatcher run "..." --push                    # push the integration branch (ne
 it (and is refused when verification blocked); a `partial`/failed verification
 or a high-risk diff requires an explicit `--yes`; the target branch is never
 written. `--mode adaptive` starts solo and **escalates to a pair on a failed
-verification**, feeding the failure back into the retry.
+verification**, feeding the failure back into the retry. `--deliberate` runs
+the full council (architect → red-team → feasibility → synthesis) to agree an
+approach **before** any file is touched, then injects that approach into the
+implementers.
 
 ## The AI Council
 

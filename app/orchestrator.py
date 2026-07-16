@@ -112,6 +112,7 @@ class _Cancel:
 
 
 class Orchestrator(QThread):
+    deliberation_ready = Signal(dict)     # CouncilResult.to_dict() (pre-plan)
     plan_ready = Signal(dict)
     agent_role = Signal(str, dict)
     agent_event = Signal(str, str, str)
@@ -154,6 +155,7 @@ class Orchestrator(QThread):
         self._verification: dict = {}
         self._published_branch: str | None = None
         self._escalation_note = ""
+        self._deliberation_text = ""
 
     # ---- external controls ------------------------------------------
     def add_steering(self, text: str) -> None:
@@ -432,6 +434,19 @@ class Orchestrator(QThread):
         if memory_ctx:
             context = f"{context}\n\n{memory_ctx}"
             self.log.emit("Память проекта подключена к контексту задачи")
+
+        # Optional deliberation: the council agrees an approach BEFORE any file
+        # is touched (architect proposal → red-team attack → feasibility →
+        # synthesis). The synthesized approach is injected into planning and
+        # every implementer's context. Reasoning-only — no writes here.
+        if self.orch.get("deliberate") and len(self.providers) >= 2 \
+                and not self.cancel_event.is_set():
+            approach = self._deliberate(context)
+            if approach:
+                self._deliberation_text = approach
+                context = (f"{context}\n\n[Согласованный подход совета — следуй ему]"
+                           f"\n{approach}")
+
         max_iters = int(self.orch.get("max_tool_iterations", 14))
         cap = self.budget.cap
 
@@ -575,6 +590,56 @@ class Orchestrator(QThread):
                                      reason="публикацию отклонил человек")
         except Exception:
             pass
+
+    # ---- deliberation (pre-plan council) ----------------------------
+    def _deliberate(self, context: str) -> str:
+        """Run the council to agree an approach before implementation. Returns
+        the synthesized approach text (or "" on failure/cancel). Reasoning-only
+        — the council never edits files. Usage and evidence are accounted for."""
+        from .council import Council
+        lead = self._lead_provider()
+        self.log.emit("Совет обсуждает подход: архитектор → red team → "
+                      "осуществимость → синтез…")
+
+        def on_ev(stage: str, pid: str, payload: str) -> None:
+            short = self._cfg(pid).get("short", pid)
+            if stage == "ask":
+                self.log.emit(f"  {short} обдумывает подход ({payload})…")
+                self.agent_event.emit(pid, "status", f"обсуждение: {payload}")
+            elif stage == "answer":
+                self.ledger.record("provider_call",
+                                   f"{short}: вклад в обсуждение подхода", agent=pid)
+
+        council = Council(self.providers, lead=lead, reputation=self.reputation,
+                          on_event=on_ev, cancel=self.cancel_event,
+                          workdir=self.project.get("local_path", ""),
+                          context=context[:6000])
+        try:
+            result = council.run(self.instruction, mode="full_council")
+        except Exception as exc:
+            self.log.emit(f"Обсуждение не удалось ({exc}) — продолжаю без него.")
+            return ""
+        # Account usage: each opinion to its author, synthesis to the lead.
+        for op in result.opinions:
+            self._usage.setdefault(op.provider_id, Usage()).add(
+                Usage(op.usage_in, op.usage_out))
+        if result.synth_usage_in or result.synth_usage_out:
+            self._usage.setdefault(lead["id"], Usage()).add(
+                Usage(result.synth_usage_in, result.synth_usage_out))
+        self.deliberation_ready.emit(result.to_dict())
+        approach = result.synthesis or (
+            result.opinions[0].text if result.opinions else "")
+        # Record the agreed approach in project memory as an 'approach' node.
+        try:
+            self.memory.add_node(
+                self.project.get("id", ""), "approach",
+                f"Подход совета: {self.instruction[:120]}",
+                body=approach[:3000], run_id=self.run_id or "")
+        except Exception:
+            pass
+        if approach:
+            self.log.emit("Подход согласован — передаю исполнителям.")
+        return approach
 
     # ---- planning ---------------------------------------------------
     def _plan(self, context: str, implementers: list[dict]) -> dict[str, dict]:
@@ -901,9 +966,13 @@ class Orchestrator(QThread):
                    else "Риск изменений: не оценивался")
         escalation_md = (f"\n> ↑ {self._escalation_note}\n"
                          if self._escalation_note else "")
+        deliberation_md = (
+            f"## Обсуждение подхода (совет)\n{self._deliberation_text}\n\n"
+            if self._deliberation_text else "")
         base = (
             f"# Отчёт по задаче\n\n**Задача:** {self.instruction}\n{budget_note}"
             f"{escalation_md}\n"
+            f"{deliberation_md}"
             f"## Что сделали исполнители\n{agent_parts}\n\n"
             f"## Ревью\n{review_notes or '(без ревью)'}\n\n"
             f"## Интеграция\nИзменённые файлы: "

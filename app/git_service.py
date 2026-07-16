@@ -18,8 +18,11 @@ class GitError(RuntimeError):
 
 def _run(args: list[str], cwd: str, timeout: int = 600) -> str:
     try:
+        # Explicit UTF-8: the locale codec (cp1251 on Windows) would mojibake
+        # non-ASCII branch names / status output shown in the UI.
         proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
-                              text=True, timeout=timeout)
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout)
     except FileNotFoundError as exc:
         raise GitError("git не найден в системе") from exc
     except subprocess.TimeoutExpired as exc:

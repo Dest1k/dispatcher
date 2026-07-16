@@ -106,8 +106,10 @@ def test_settings_save_keeps_cli_fields(qapp, tmp_config, monkeypatch):
     cfg = Config(_default_config())
     dlg = SettingsDialog(cfg)
     dlg.council_planning.setChecked(True)
+    dlg.deliberate.setChecked(True)
     dlg._save()
     assert cfg.orchestration["council_planning"] is True
+    assert cfg.orchestration["deliberate"] is True
     assert cfg.providers["codex_cli"]["effort"] == "ultra"
     assert cfg.providers["codex_cli"]["auth"] == "cli_session"
     dlg.close()
