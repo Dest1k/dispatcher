@@ -103,6 +103,11 @@ class MainWindow(QMainWindow):
         runs_btn.clicked.connect(self._open_runs)
         v.addWidget(runs_btn)
 
+        memory_btn = QPushButton("🧠 Память проекта")
+        memory_btn.setObjectName("Ghost")
+        memory_btn.clicked.connect(self._open_memory)
+        v.addWidget(memory_btn)
+
         settings_btn = QPushButton("⚙ Настройки моделей")
         settings_btn.setObjectName("Ghost")
         settings_btn.clicked.connect(self._open_settings)
@@ -327,6 +332,13 @@ class MainWindow(QMainWindow):
             return
         from .runs_dialog import RunsDialog
         RunsDialog(self.run_store, self.config, project, parent=self).exec()
+
+    def _open_memory(self) -> None:
+        project = self._current_project()
+        if not project:
+            return
+        from .memory_dialog import MemoryDialog
+        MemoryDialog(project, parent=self).exec()
 
     def _open_settings(self) -> None:
         dlg = SettingsDialog(self.config, parent=self)
