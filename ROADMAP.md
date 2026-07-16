@@ -29,9 +29,13 @@ feasibility → synthesis), **adaptive escalation** (solo attempt → escalate t
 a pair in fresh worktrees on verification failure, feeding the failure back),
 and a **council deliberation phase** (`deliberate`) that agrees an approach —
 architect → red-team → feasibility → synthesis — *before* implementation and
-injects it into the planner and implementers. Planned: a validated task DAG
-scheduler; a configurable escalation ladder (solo → pair → full_council);
-mid-run **hot-join** of a new agent (currently declined honestly).
+injects it into the planner and implementers; a **configurable escalation
+ladder** (`escalation_ladder`, default solo → pair, extendable to
+full_council; steps needing more providers are skipped and repeats deduped);
+and `full_council` as the vision's **complete reasoning pipeline** (it
+auto-deliberates before the parallel implementation). Planned: a validated
+task DAG scheduler; mid-run **hot-join** of a new agent (currently declined
+honestly).
 
 ## Phase 4 — Providers & auth ✅ (core)
 Done: dynamic registry, transport/auth/billing model, direct-API + local

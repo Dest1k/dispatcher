@@ -303,15 +303,44 @@ class Orchestrator(QThread):
         # pair / adaptive (adaptive's first attempt is chosen in _attempt_plan)
         return [ordered[0]], ordered[1]
 
+    def _team_for_mode(self, mode: str) -> tuple[list[dict], dict | None] | None:
+        """The (implementers, reviewer) team for a given execution mode, or
+        None when there aren't enough active providers for it."""
+        active = self.providers
+        if not active:
+            return None
+        lead = self._lead_provider()
+        ordered = [lead] + [p for p in active if p["id"] != lead["id"]]
+        if mode == "solo":
+            return [ordered[0]], None
+        if mode == "pair":
+            return ([ordered[0]], ordered[1]) if len(active) >= 2 else None
+        if mode == "full_council":
+            return (active, lead) if len(active) >= 2 else None
+        return None
+
     def _attempt_plan(self) -> list[tuple[list[dict], dict | None]]:
-        """Ordered (implementers, reviewer) attempts. Adaptive mode starts solo
-        and escalates to a pair on verification failure; every other mode is a
-        single attempt with its normal team."""
+        """Ordered (implementers, reviewer) attempts. Adaptive mode climbs a
+        configurable escalation ladder (default solo → pair) on verification
+        failure; every other mode is a single attempt with its normal team.
+        Steps needing more providers than are active are skipped, and teams
+        that repeat an earlier attempt's exact composition are deduped."""
         mode = self.orch.get("execution_mode", "pair")
         if mode == "adaptive" and len(self.providers) > 1:
-            lead = self._lead_provider()
-            ordered = [lead] + [p for p in self.providers if p["id"] != lead["id"]]
-            return [([ordered[0]], None), ([ordered[0]], ordered[1])]
+            ladder = self.orch.get("escalation_ladder") or ["solo", "pair"]
+            attempts: list[tuple[list[dict], dict | None]] = []
+            seen: set = set()
+            for step in ladder:
+                team = self._team_for_mode(step)
+                if team is None:
+                    continue
+                sig = (tuple(p["id"] for p in team[0]),
+                       team[1]["id"] if team[1] else None)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                attempts.append(team)
+            return attempts or [self._select_team()]
         return [self._select_team()]
 
     def _integrate_and_score(self, implementers) -> tuple[dict, list[dict]]:
@@ -439,7 +468,11 @@ class Orchestrator(QThread):
         # is touched (architect proposal → red-team attack → feasibility →
         # synthesis). The synthesized approach is injected into planning and
         # every implementer's context. Reasoning-only — no writes here.
-        if self.orch.get("deliberate") and len(self.providers) >= 2 \
+        # `full_council` is the vision's "complete reasoning pipeline", so it
+        # always deliberates; other modes deliberate only when asked.
+        deliberate = (self.orch.get("deliberate")
+                      or self.orch.get("execution_mode") == "full_council")
+        if deliberate and len(self.providers) >= 2 \
                 and not self.cancel_event.is_set():
             approach = self._deliberate(context)
             if approach:
@@ -470,10 +503,13 @@ class Orchestrator(QThread):
                     f"исполнители: {', '.join(p['short'] for p in implementers)}"
                     + (f" · ревьюер: {reviewer['short']}" if reviewer else ""))
             else:
+                team_desc = (f"{len(implementers)} исполнителей"
+                             + (f" + ревьюер {reviewer['short']}" if reviewer
+                                else ""))
                 self._escalation_note = (
-                    f"Попытка {attempt_idx} (одиночный исполнитель) не прошла "
-                    f"верификацию: {self._verification_failure_summary(verification)}. "
-                    "Выполнена эскалация до пары исполнитель+ревьюер.")
+                    f"Попытка {attempt_idx} не прошла верификацию: "
+                    f"{self._verification_failure_summary(verification)}. "
+                    f"Эскалация до состава: {team_desc}.")
                 self.log.emit(
                     f"↑ Эскалация (попытка {attempt_idx + 1}): исполнители "
                     f"{', '.join(p['short'] for p in implementers)}"

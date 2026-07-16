@@ -11,7 +11,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 0 | Audit + committed pytest baseline | ✅ done |
 | 1 | Critical safety (git, isolation, secrets, verification, honest UI) | ✅ done (core) |
 | 2 | Persistent run engine (SQLite, state machine, checkpoints, resume) | ✅ done |
-| 3 | Isolated multi-agent orchestration (worktrees, DAG, review, integrate) | ◐ isolation+integration+review+plan-validation+safe fallback+mid-run disable+plan red-team critique+standalone council+adaptive escalation+council deliberation feeding the pipeline done; task-DAG scheduler & configurable escalation ladder planned |
+| 3 | Isolated multi-agent orchestration (worktrees, DAG, review, integrate) | ◐ isolation+integration+review+plan-validation+safe fallback+mid-run disable+plan red-team critique+standalone council+adaptive escalation (configurable ladder)+council deliberation feeding the pipeline+full_council reasoning pipeline done; task-DAG scheduler planned |
 | 4 | Provider/auth backends (transports, billing, local vLLM, **CLI sessions**) | ✅ core: registry+billing+local+API+retry/backoff+SSE+`cli_session` (claude/codex/grok через существующие логины, doctor, discovery моделей, native-режим, patch-boundary policy) |
 | 4.5 | Intelligence layer (v3) | ✅ capabilities+routing+reputation+council+memory graph+ledger+risk |
 | 5 | UI + publication (dashboard, diff, approvals, draft PR) | ◐ approval+diff+evidence+risk+billing labels+CLI-session forms+safety knobs+run-recovery done; run dashboard + 1-click PR planned |
@@ -47,7 +47,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 24 | Draft PR after approval | ✅ push integration branch + one-click "compare/PR" URL; API PR creation optional (token/App) |
 | 25 | Reports stored consistently; no `.gitignore` contradiction | ✅ |
 | 26 | UI doesn't claim raw chain-of-thought | ✅ |
-| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (198 tests) |
+| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (207 tests) |
 | 28 | README describes only real functionality | ✅ |
 | 29 | User config migratable without losing projects | ✅ |
 | 30 | Original repo recoverable after failed/cancelled run | ✅ |
@@ -117,6 +117,11 @@ Test suite 77 → 100.
   the planner and every implementer's context, recorded in the memory graph as
   an `approach` node, and shown in the report. `deliberation_ready` signal,
   `--deliberate` flag on `dispatcher run`, a Settings checkbox.
+- **Configurable escalation ladder** (`escalation_ladder`, default solo → pair):
+  adaptive mode climbs it on verification failure; steps needing more providers
+  than are active are skipped and repeats deduped. **`full_council`** is now the
+  vision's *complete reasoning pipeline* — it auto-deliberates before the
+  parallel implementation.
 - Live validation on this machine: `doctor` 3/3 ready; `--probe` round-trips
   pong via claude (3.2 s), codex (11.4 s), grok (3.5 s); a live
   `full_council` ran the whole architect→red-team→feasibility→synthesis
@@ -124,7 +129,7 @@ Test suite 77 → 100.
   reset of corrupt config) — both fixed with regression tests; a live headless
   `dispatcher run` over the real Claude CLI created a file in an isolated
   worktree and the dry-run left the source repo completely untouched.
-- Test suite 100 → 198 (still no network, no real CLI spawns in tests; the
+- Test suite 100 → 207 (still no network, no real CLI spawns in tests; the
   new run/escalation e2e tests use real git with mocked providers/verification).
 
 ## Where to continue next

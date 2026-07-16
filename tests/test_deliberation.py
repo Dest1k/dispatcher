@@ -141,6 +141,22 @@ def test_no_deliberation_by_default(
     assert "Обсуждение подхода" not in events.get("report", "")
 
 
+def test_full_council_mode_auto_deliberates(
+        has_git, git_repo, tmp_path, delib_env, qapp):
+    """full_council is the vision's 'complete reasoning pipeline' — it
+    deliberates automatically even without the explicit deliberate flag."""
+    from app.memory_graph import MemoryGraph
+    from app.orchestrator import Orchestrator
+    delib_env.orchestration["execution_mode"] = "full_council"
+    assert delib_env.orchestration.get("deliberate") is False   # not set on
+    memory = MemoryGraph(tmp_path / "mem.db")
+    orc = Orchestrator(delib_env, _project(git_repo), "task", memory=memory)
+    events = _drive(orc)
+    assert events["delib"] is not None
+    assert orc._deliberation_text
+    memory.close()
+
+
 def test_deliberation_skipped_with_single_provider(
         has_git, git_repo, tmp_path, delib_env, qapp):
     from app.orchestrator import Orchestrator

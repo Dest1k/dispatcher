@@ -96,11 +96,13 @@ dispatcher run "..." --push                    # push the integration branch (ne
 `dispatcher/<id>/integration` branch **locally**; `--push` is required to push
 it (and is refused when verification blocked); a `partial`/failed verification
 or a high-risk diff requires an explicit `--yes`; the target branch is never
-written. `--mode adaptive` starts solo and **escalates to a pair on a failed
-verification**, feeding the failure back into the retry. `--deliberate` runs
-the full council (architect → red-team → feasibility → synthesis) to agree an
-approach **before** any file is touched, then injects that approach into the
-implementers.
+written. `--mode adaptive` starts solo and **escalates on a failed
+verification** along a configurable ladder (`escalation_ladder`, default
+solo → pair, extendable to full_council), feeding the failure back into the
+retry. `--deliberate` (and `--mode full_council`, the **complete reasoning
+pipeline**) runs the council (architect → red-team → feasibility → synthesis)
+to agree an approach **before** any file is touched, then injects that
+approach into the implementers.
 
 ## The AI Council
 
