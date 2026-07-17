@@ -36,8 +36,10 @@ full_council; steps needing more providers are skipped and repeats deduped);
 auto-deliberates before the parallel implementation); and a **task-DAG
 executor** (`dag_execution`) that runs a validated dependency graph in ordered
 layers — independent tasks parallel in isolated worktrees, dependent tasks
-building on prior layers' integrated commit. Planned: mid-run **hot-join** of a
-new agent (currently declined honestly).
+building on prior layers' integrated commit; and **safe mid-run hot-join** —
+a new agent joins a running execution only with a disjoint (PathPolicy-aware)
+file zone, in a fresh worktree on a tracked thread joined before integration,
+else it's declined honestly. Phase 3 complete.
 
 ## Phase 4 — Providers & auth ✅ (core)
 Done: dynamic registry, transport/auth/billing model, direct-API + local

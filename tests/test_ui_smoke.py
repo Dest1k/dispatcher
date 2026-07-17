@@ -145,7 +145,7 @@ def test_no_autoping_on_startup(window, monkeypatch):
     assert window._limits_checker is None
 
 
-def test_panel_toggle_running_does_not_crash(window):
+def test_panel_toggle_running_does_not_crash(window, monkeypatch):
     """Toggling a panel while a run is live must route to the orchestrator's
     disable/hot-join controls without raising (regression: add_agent was
     missing and raised AttributeError)."""
@@ -172,7 +172,11 @@ def test_panel_toggle_running_does_not_crash(window):
     assert "anthropic" in orc.disabled
     assert panel.live is False
 
-    win._on_panel_toggle("anthropic")            # attempt hot-join -> declined
+    # hot-join path asks for a zone; stub the dialog so the test doesn't block.
+    from PySide6.QtWidgets import QInputDialog
+    monkeypatch.setattr(QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: ("src/x.py", True)))
+    win._on_panel_toggle("anthropic")            # attempt hot-join -> declined (not executing)
     assert panel.live is False                    # honestly not re-added
 
 

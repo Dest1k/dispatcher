@@ -150,6 +150,14 @@ class Orchestrator(QThread):
         self.assignments: dict[str, dict] = {}
         self.disabled: set[str] = set()
         self.live_ids: set[str] = set()
+        # Mid-run hot-join bookkeeping (guarded by _exec_lock).
+        self._exec_lock = threading.Lock()
+        self._phase = ""                       # "executing" while joinable
+        self._live_threads: list = []
+        self._worktrees: dict = {}
+        self._hot_participants: list = []
+        self._context = ""
+        self._summaries: dict = {}
         self.rw: RunWorkspaces | None = None
         self.budget = BudgetGuard(self.orch.get("budget_usd", 0.0),
                                   self.orch.get("budget_warn_ratio", 0.8))
@@ -200,28 +208,80 @@ class Orchestrator(QThread):
             self.log.emit(f"⛔ {prov} отключён — других исполнителей нет")
         self.agent_event.emit(provider_id, "status", "отключён пользователем")
 
-    def add_agent(self, provider: dict) -> bool:
-        """Attempt to hot-join a model into a running council.
+    def add_agent(self, provider: dict, files: list[str] | None = None) -> bool:
+        """Hot-join a model into a running execution — safely.
 
-        Returns True only if the model is actually participating. A model that
-        is already live is reported as joined. Otherwise a true mid-run hot-join
-        — spawning a fresh isolated worktree with a *disjoint* ownership zone and
-        its own thread for a late joiner — is not yet supported: doing it without
-        re-planning would either leave the joiner with no enforced zone (breaking
-        file-ownership) or collide with in-flight work. So the join is declined
-        honestly and the model becomes available from the next task, rather than
-        silently doing nothing or crashing the caller.
+        A true mid-run join is allowed ONLY when it can't collide with in-flight
+        work: the joiner must be given its own file zone that is **disjoint**
+        (PathPolicy-aware, via `planning.zones_overlap`) from every active
+        agent's zone. Then it gets a fresh isolated worktree and its own worker
+        thread, which the executor joins before patches are collected. Without a
+        disjoint zone — or outside the execution phase — the join is declined
+        honestly (the model participates from the next task) rather than risking
+        a collision or silently doing nothing. Returns True only if the model is
+        actually participating now.
         """
         pid = provider.get("id")
+        short = provider.get("short", pid)
         if pid in self.live_ids:
             return True
-        short = provider.get("short", pid)
-        self.log.emit(
-            f"⚠ «{short}»: подключение нового участника на лету пока не "
-            "поддерживается безопасно — модель будет участвовать со следующей "
-            "задачи. Текущую работу продолжают активные участники.")
-        self.agent_event.emit(pid, "status", "присоединится со следующей задачи")
-        return False
+        zone = [str(f).strip() for f in (files or []) if str(f).strip()]
+        assignment = None
+        with self._exec_lock:
+            if self._phase != "executing" or self.rw is None:
+                self.log.emit(
+                    f"⚠ «{short}»: подключение на лету возможно только во время "
+                    "выполнения — модель подключится со следующей задачи.")
+                self.agent_event.emit(pid, "status", "присоединится со следующей задачи")
+                return False
+            if not zone:
+                self.log.emit(
+                    f"⚠ «{short}»: для подключения на лету нужна отдельная "
+                    "непересекающаяся зона файлов — отклонено.")
+                self.agent_event.emit(pid, "status", "нужна зона файлов")
+                return False
+            from .planning import zones_overlap
+            active_zones = [(aid, f) for aid, a in self.assignments.items()
+                            if aid in self.live_ids for f in (a.get("files") or [])]
+            for zf in zone:
+                clash = next(((aid, af) for aid, af in active_zones
+                              if zones_overlap(zf, af)), None)
+                if clash:
+                    other = self._cfg(clash[0]).get("short", clash[0])
+                    self.log.emit(
+                        f"⚠ «{short}»: зона «{zf}» пересекается с зоной активного "
+                        f"«{other}» ({clash[1]}) — отклонено (риск коллизии).")
+                    self.agent_event.emit(pid, "status", "зона пересекается — отклонено")
+                    return False
+            try:
+                ws = self.rw.create_agent_worktree(pid, allowed_paths=zone,
+                                                   denied=SECRET_DENY)
+            except Exception as exc:
+                self.log.emit(f"⚠ «{short}»: не удалось создать рабочую копию "
+                              f"({exc}) — отклонено.")
+                return False
+            if pid not in {p["id"] for p in self.providers}:
+                self.providers.append(dict(provider))
+            assignment = {"provider": pid, "role": provider.get("strength", ""),
+                          "title": provider.get("short", pid),
+                          "objective": self.instruction, "files": zone}
+            self.assignments[pid] = assignment
+            self._worktrees[pid] = ws
+            self._usage.setdefault(pid, Usage())
+            self.agent_cancels[pid] = threading.Event()
+            self.live_ids.add(pid)
+            self._hot_participants.append(dict(provider))
+            t = threading.Thread(
+                target=self._run_agent_in_worktree,
+                args=(provider, assignment, ws, self._context, self._summaries),
+                daemon=True)
+            self._live_threads.append(t)
+            t.start()
+        # Emit signals outside the lock.
+        self.agent_role.emit(pid, assignment)
+        self.log.emit(f"✅ «{short}» подключился на лету — зона: {', '.join(zone)}")
+        self.agent_event.emit(pid, "status", "работает")
+        return True
 
     def approve(self, push: bool = False) -> None:
         self._decision_value = {"action": "approve", "push": push}
@@ -572,6 +632,12 @@ class Orchestrator(QThread):
             if self.cancel_event.is_set():
                 return self._finish({"status": "cancelled", "message": "Остановлено."},
                                     RunState.CANCELLED)
+
+            # Fold in any agents that hot-joined during execution so they count
+            # in verification reputation and the final outcome bookkeeping.
+            known = {p["id"] for p in implementers}
+            implementers = implementers + [p for p in self._hot_participants
+                                           if p["id"] not in known]
 
             integ, conflicts = self._integrate_and_score(implementers)
             review_notes = self._review(reviewer, integ["diff"]) if reviewer else ""
@@ -992,39 +1058,54 @@ class Orchestrator(QThread):
     def _execute(self, implementers, assignments, context) -> dict[str, str]:
         self.assignments = assignments
         summaries: dict[str, str] = {}
-        worktrees = {}
-        # Create worktrees serially (git worktree add must not race).
-        for p in implementers:
-            pid = p["id"]
-            if pid not in assignments:
-                continue
-            allowed = assignments[pid].get("files") or None
-            ws = self.rw.create_agent_worktree(pid, allowed_paths=allowed,
-                                               denied=SECRET_DENY)
-            worktrees[pid] = ws
-            self._usage[pid] = Usage()
-            self.live_ids.add(pid)
-            self.agent_cancels[pid] = threading.Event()
+        # Shared state so add_agent() can hot-join a worker mid-execution.
+        with self._exec_lock:
+            self._summaries = summaries
+            self._context = context
+            self._worktrees = {}
+            self._live_threads = []
+            self._hot_participants = []
+            self._phase = "executing"
+            # Create worktrees serially (git worktree add must not race).
+            for p in implementers:
+                pid = p["id"]
+                if pid not in assignments:
+                    continue
+                allowed = assignments[pid].get("files") or None
+                ws = self.rw.create_agent_worktree(pid, allowed_paths=allowed,
+                                                   denied=SECRET_DENY)
+                self._worktrees[pid] = ws
+                self._usage[pid] = Usage()
+                self.live_ids.add(pid)
+                self.agent_cancels[pid] = threading.Event()
+            for p in implementers:
+                pid = p["id"]
+                if pid not in self._worktrees:
+                    continue
+                self.agent_role.emit(pid, assignments[pid])
+                t = threading.Thread(target=self._run_agent_in_worktree,
+                                     args=(p, assignments[pid], self._worktrees[pid],
+                                           context, summaries), daemon=True)
+                self._live_threads.append(t)
+                t.start()
 
-        threads = []
-        for p in implementers:
-            pid = p["id"]
-            if pid not in worktrees:
-                continue
-            self.agent_role.emit(pid, assignments[pid])
-            t = threading.Thread(target=self._run_agent_in_worktree,
-                                 args=(p, assignments[pid], worktrees[pid],
-                                       context, summaries), daemon=True)
-            threads.append(t)
-            t.start()
-        for t in threads:
-            t.join()
+        # Join every worker, INCLUDING any hot-joined mid-execution. The window
+        # is closed under the lock only once nothing is left running, so a join
+        # can't slip in after we stop waiting for it.
+        while True:
+            with self._exec_lock:
+                pending = [t for t in self._live_threads if t.is_alive()]
+                if not pending:
+                    self._phase = "collecting"
+                    break
+            for t in pending:
+                t.join(0.2)
 
         # Collect patches from each isolated worktree. The patch is validated
         # against the agent's PathPolicy here — the enforcement boundary for
         # CLI-native agents whose in-worktree edits bypass the tool layer.
         self._patches = {}
-        for pid, ws in worktrees.items():
+        for pid, ws in self._worktrees.items():
             try:
                 patch = ws.stage_and_diff()
             except WorkspaceError as exc:
@@ -1143,15 +1224,16 @@ class Orchestrator(QThread):
     def _integrate(self, implementers) -> list[dict]:
         self.rw.create_integration_worktree()
         conflicts = []
-        for p in implementers:
-            pid = p["id"]
-            patch = getattr(self, "_patches", {}).get(pid, "")
+        # Iterate collected patches (not just the planned implementers) so a
+        # hot-joined agent's patch is integrated too.
+        for pid, patch in getattr(self, "_patches", {}).items():
             if not patch.strip():
                 continue
             ok, msg = self.rw.apply_patch(patch)
             if not ok:
                 conflicts.append({"provider": pid, "message": msg[:400]})
-                self.log.emit(f"Конфликт интеграции {self._cfg(pid)['short']}: {msg[:120]}")
+                self.log.emit("Конфликт интеграции "
+                              f"{self._cfg(pid).get('short', pid)}: {msg[:120]}")
         return conflicts
 
     # ---- review -----------------------------------------------------

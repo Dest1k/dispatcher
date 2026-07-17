@@ -432,7 +432,18 @@ class MainWindow(QMainWindow):
                 panel.set_live(False)
             else:
                 provider = self.config.providers.get(provider_id)
-                if provider and self.orchestrator.add_agent(provider):
+                if provider is None:
+                    return
+                # A safe hot-join needs its own disjoint file zone; ask for it.
+                from PySide6.QtWidgets import QInputDialog
+                zone, ok = QInputDialog.getText(
+                    self, "Подключить на лету",
+                    f"Зона файлов для «{provider.get('short', provider_id)}» "
+                    "(через запятую, не пересекается с активными):")
+                if not ok:
+                    return
+                files = [f.strip() for f in zone.split(",") if f.strip()]
+                if self.orchestrator.add_agent(provider, files=files):
                     panel.set_live(True)
                     panel.set_status("работает")
         else:
