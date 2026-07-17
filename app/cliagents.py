@@ -34,10 +34,10 @@ _KNOWN = {
     "claude": {
         "title": "Claude Code CLI (Anthropic)",
         "models": ["claude-opus-4-8", "opus", "sonnet", "haiku"],
-        "efforts": ["low", "medium", "high", "xhigh", "max"],
+        "efforts": ["low", "medium", "high", "xhigh", "max", "ultracode"],
         "default_model": "claude-opus-4-8",
-        "default_effort": "max",
-        "verified": "2026-07-17 · claude 2.1.211 --help",
+        "default_effort": "ultracode",
+        "verified": "2026-07-18 · claude 2.1.211 (--effort ultracode = xhigh + workflow-оркестрация)",
     },
     "codex": {
         "title": "Codex CLI (OpenAI)",

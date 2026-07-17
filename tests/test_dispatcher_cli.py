@@ -44,7 +44,7 @@ def test_doctor_json_ready(isolated_config, monkeypatch, capsys):
     entry = payload["providers"][0]
     assert entry["flavor"] == "claude"
     assert entry["configured_model"] == "claude-opus-4-8"
-    assert entry["configured_effort"] == "max"       # user-specified default
+    assert entry["configured_effort"] == "ultracode"  # user-specified default
 
 
 def test_doctor_text_not_ready_exit_1(isolated_config, monkeypatch, capsys):

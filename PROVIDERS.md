@@ -56,9 +56,9 @@ Every participant chooses its model and effort independently. Availability is
   e.g. `gpt-5.6-sol` with low…`ultra`);
 - Grok: `~/.grok/models_cache.json` (e.g. `grok-4.5` with low/medium/high);
 - Claude: built-in registry with provenance (`claude-opus-4-8`, `opus`,
-  `sonnet`, `haiku`; efforts low…`max`).
+  `sonnet`, `haiku`; efforts low…`max`, plus `ultracode` = xhigh + workflow-оркестрация).
 
-Defaults follow the product spec: **Opus 4.8 / max**, **GPT-5.6-Sol / ultra**,
+Defaults follow the product spec: **Opus 4.8 / ultracode**, **GPT-5.6-Sol / ultra**,
 **Grok 4.5 / high**. `dispatcher doctor` shows what your machine actually has.
 
 ## Billing sources

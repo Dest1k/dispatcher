@@ -243,9 +243,9 @@ def test_cli_providers_seeded_with_user_defaults(tmp_config):
     claude = cfg.providers["claude_cli"]
     codex = cfg.providers["codex_cli"]
     grok = cfg.providers["grok_cli"]
-    # Defaults per the product spec: Opus 4.8 max / GPT-5.6-Sol ultra /
+    # Defaults per the product spec: Opus 4.8 ultracode / GPT-5.6-Sol ultra /
     # Grok 4.5 high; models and efforts stay editable per participant.
-    assert (claude["model"], claude["effort"]) == ("claude-opus-4-8", "max")
+    assert (claude["model"], claude["effort"]) == ("claude-opus-4-8", "ultracode")
     assert (codex["model"], codex["effort"]) == ("gpt-5.6-sol", "ultra")
     assert (grok["model"], grok["effort"]) == ("grok-4.5", "high")
     for p in (claude, codex, grok):

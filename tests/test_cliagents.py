@@ -29,8 +29,9 @@ def test_claude_ready_via_session_file(monkeypatch, tmp_path):
     st = ca.detect("claude", home=home, run_commands=False)
     assert st.installed and st.authenticated is True and st.ready
     assert st.default_model == "claude-opus-4-8"
-    assert st.default_effort == "max"
+    assert st.default_effort == "ultracode"
     assert "max" in st.effort_options()
+    assert "ultracode" in st.effort_options()
 
 
 def test_claude_auth_via_oauth_account(monkeypatch, tmp_path):
