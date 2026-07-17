@@ -315,6 +315,12 @@ class SettingsDialog(QDialog):
         self.deliberate.setChecked(o.get("deliberate", False))
         orch_form.addRow(self.deliberate)
 
+        self.dag_execution = QCheckBox(
+            "Граф задач: разбить на подзадачи с зависимостями и выполнять "
+            "послойно (зависимые видят результат предыдущих)")
+        self.dag_execution.setChecked(o.get("dag_execution", False))
+        orch_form.addRow(self.dag_execution)
+
         self.budget_usd = QDoubleSpinBox()
         self.budget_usd.setRange(0.0, 10000.0)
         self.budget_usd.setDecimals(2)
@@ -403,6 +409,7 @@ class SettingsDialog(QDialog):
             "require_verification": self.require_verification.isChecked(),
             "council_planning": self.council_planning.isChecked(),
             "deliberate": self.deliberate.isChecked(),
+            "dag_execution": self.dag_execution.isChecked(),
             "budget_usd": self.budget_usd.value(),
             "stream": self.stream.isChecked(),
             "auto_push": self.auto_push.isChecked(),

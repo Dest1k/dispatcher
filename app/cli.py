@@ -203,6 +203,8 @@ def cmd_run(args) -> int:
         cfg.orchestration["execution_mode"] = args.mode
     if args.deliberate:
         cfg.orchestration["deliberate"] = True
+    if args.dag:
+        cfg.orchestration["dag_execution"] = True
     if args.providers:
         # honor an explicit subset by disabling the rest for this run
         wanted = {p["id"] for p in providers}
@@ -632,6 +634,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--deliberate", action="store_true",
                      help="сначала совет согласует подход "
                           "(архитектор → red team → осуществимость → синтез)")
+    run.add_argument("--dag", action="store_true",
+                     help="исполнение по графу задач с зависимостями "
+                          "(послойно, зависимые задачи видят предыдущие)")
     run.add_argument("--providers", default="",
                      help="ограничить состав: id через запятую")
     run.add_argument("--yes", action="store_true",

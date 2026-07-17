@@ -87,6 +87,7 @@ agents, with no GUI:
 ```bash
 dispatcher run "Refactor the database layer" --mode adaptive
 dispatcher run "..." --deliberate              # council agrees an approach first
+dispatcher run "..." --dag                      # task graph: dependent tasks in ordered layers
 dispatcher run "..." --project <path|id>  --providers claude_cli,codex_cli
 dispatcher run "..." --dry-run --show-diff     # run everything, publish nothing
 dispatcher run "..." --push                    # push the integration branch (never the target)
@@ -102,7 +103,11 @@ solo → pair, extendable to full_council), feeding the failure back into the
 retry. `--deliberate` (and `--mode full_council`, the **complete reasoning
 pipeline**) runs the council (architect → red-team → feasibility → synthesis)
 to agree an approach **before** any file is touched, then injects that
-approach into the implementers.
+approach into the implementers. `--dag` asks the lead for a **task graph** with
+explicit dependencies and executes it in ordered layers — independent tasks run
+in parallel isolated worktrees, dependent tasks in later layers build on the
+previous layers' integrated commit (validated for cycles and concurrent-zone
+overlaps; falls back to the normal flow if the graph is invalid).
 
 ## The AI Council
 

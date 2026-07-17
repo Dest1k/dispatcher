@@ -131,16 +131,20 @@ class RunWorkspaces:
     def create_agent_worktree(self, agent_id: str,
                               allowed_paths: list[str] | None = None,
                               denied: list[str] | None = None,
-                              read_only: list[str] | None = None) -> AgentWorkspace:
+                              read_only: list[str] | None = None,
+                              base_override: str | None = None) -> AgentWorkspace:
+        # base_override lets a DAG layer build on the previous layer's
+        # integrated commit (so dependent tasks see earlier work); the agent's
+        # diff is then taken against that same commit.
+        base = base_override or self.base_commit
         path = self.run_dir / "agents" / agent_id / "worktree"
         path.parent.mkdir(parents=True, exist_ok=True)
         branch = f"dispatcher/{self.run_id}/{agent_id}"
-        _git(["worktree", "add", "-b", branch, str(path), self.base_commit],
-             self.repo_root)
+        _git(["worktree", "add", "-b", branch, str(path), base], self.repo_root)
         self._created_branches.append(branch)
         policy = PathPolicy(str(path), allowed=allowed_paths, denied=denied,
                             read_only=read_only)
-        ws = AgentWorkspace(agent_id, path, branch, self.base_commit, policy)
+        ws = AgentWorkspace(agent_id, path, branch, base, policy)
         self.agents[agent_id] = ws
         return ws
 
@@ -187,6 +191,27 @@ class RunWorkspaces:
             return ""
         return _git_raw(["diff", "--cached", self.base_commit],
                         str(self.integration_path))
+
+    def integration_head(self) -> str:
+        """Current commit of the integration worktree (advances per DAG layer)."""
+        if self.integration_path is None:
+            return self.base_commit
+        return _git(["rev-parse", "HEAD"], str(self.integration_path))
+
+    def integration_diff_range(self) -> str:
+        """Cumulative committed diff base..HEAD — used after layered DAG runs
+        where each layer was committed rather than left staged."""
+        if self.integration_path is None:
+            return ""
+        return _git_raw(["diff", f"{self.base_commit}..HEAD"],
+                        str(self.integration_path))
+
+    def integration_changed_files_range(self) -> list[str]:
+        if self.integration_path is None:
+            return []
+        out = _git(["diff", "--name-only", f"{self.base_commit}..HEAD"],
+                   str(self.integration_path))
+        return [line for line in out.splitlines() if line.strip()]
 
     def commit_integration(self, message: str) -> str | None:
         if self.integration_path is None:

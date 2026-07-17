@@ -230,6 +230,7 @@ def _default_config() -> dict[str, Any]:
             "council_planning": False,         # red-team plan critique (opt-in)
             "deliberate": False,               # council agrees an approach first
             "escalation_ladder": ["solo", "pair"],  # adaptive-mode retry ladder
+            "dag_execution": False,            # opt-in task-DAG layered execution
             "max_tool_iterations": 14,          # safer adaptive default
             "budget_usd": 0.0,                   # 0 = no hard cap
             "budget_warn_ratio": 0.8,

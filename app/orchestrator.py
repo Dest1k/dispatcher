@@ -156,6 +156,7 @@ class Orchestrator(QThread):
         self._published_branch: str | None = None
         self._escalation_note = ""
         self._deliberation_text = ""
+        self._dag_committed = False
 
     # ---- external controls ------------------------------------------
     def add_steering(self, text: str) -> None:
@@ -480,6 +481,38 @@ class Orchestrator(QThread):
                 context = (f"{context}\n\n[Согласованный подход совета — следуй ему]"
                            f"\n{approach}")
 
+        # Optional DAG execution (opt-in `dag_execution`): the lead builds a
+        # task graph with explicit dependencies; independent tasks run in
+        # parallel isolated worktrees, dependent tasks in later layers build on
+        # the previous layers' integrated commit. Falls back to the normal
+        # attempt loop when unavailable or the graph is invalid.
+        if self.orch.get("dag_execution") and len(self.providers) > 1 \
+                and not self.cancel_event.is_set():
+            self._ck(RunState.PLANNING)
+            dag_layers = self._plan_dag(context)
+            if dag_layers:
+                self._ck(RunState.EXECUTING)
+                summaries, integ, conflicts = self._execute_dag(dag_layers, context)
+                if self.cancel_event.is_set():
+                    return self._finish(
+                        {"status": "cancelled", "message": "Остановлено."},
+                        RunState.CANCELLED)
+                implementers = self._dag_implementers(dag_layers)
+                reviewer = self._dag_reviewer(implementers)
+                review_notes = self._review(reviewer, integ["diff"]) if reviewer else ""
+                self._ck(RunState.VERIFYING)
+                verification = self._verify(root)
+                self._verification = verification.to_dict()
+                self._verification["change_risk"] = self.change_risk.to_dict()
+                for check in verification.checks:
+                    self.ledger.record("test", f"{check.name}: {check.status}")
+                for p in implementers:
+                    self.reputation.record_verification(
+                        p["id"], verification.status == "pass")
+                self.verification_ready.emit(self._verification)
+                return self._finalize_run(summaries, review_notes, integ,
+                                          conflicts, verification, implementers)
+
         max_iters = int(self.orch.get("max_tool_iterations", 14))
         cap = self.budget.cap
 
@@ -553,6 +586,13 @@ class Orchestrator(QThread):
                     or self.cancel_event.is_set():
                 break
 
+        self._finalize_run(summaries, review_notes, integ, conflicts,
+                           verification, implementers)
+
+    def _finalize_run(self, summaries, review_notes, integ, conflicts,
+                      verification, implementers) -> None:
+        """Report → human approval gate → publish. Shared by the attempt-loop
+        and DAG execution paths."""
         # Report (stored as an artifact OUTSIDE the target repo), redacted.
         report = redact(self._compose_report(summaries, review_notes, integ, verification))
         self._report = report
@@ -788,6 +828,161 @@ class Orchestrator(QThread):
             self.log.emit(f"Критика плана не удалась ({exc}) — продолжаю без неё.")
         return plan
 
+    # ---- DAG planning + layered execution ---------------------------
+    def _plan_dag(self, context: str):
+        """Ask the lead for a task DAG; validate it; return topological layers
+        (or None to fall back to the normal attempt loop)."""
+        from .dag import describe, topological_layers, validate_dag
+        lead = self._lead_provider()
+        self.log.emit(f"{lead['short']} строит граф задач (DAG)…")
+        roster = "\n".join(f"- {p['id']}: {p['label']} — {p['strength']}"
+                           for p in self.providers)
+        system = ("Ты — ведущий архитектор. Разбей задачу на подзадачи с ЯВНЫМИ "
+                  "зависимостями (ациклический граф). Подзадачи одного уровня "
+                  "(без общих зависимостей) идут ПАРАЛЛЕЛЬНО и ДОЛЖНЫ иметь "
+                  "непересекающиеся файлы; зависимые — в следующих слоях. "
+                  "Ответь строго одним JSON-объектом.")
+        prompt = (f"Задача:\n{self.instruction}\n\nИсполнители:\n{roster}\n\n"
+                  f"Структура проекта:\n{context}\n\n"
+                  'JSON: {"tasks": [{"id": "t1", "provider": "<id>", '
+                  '"title": "...", "objective": "...", "files": ["путь"], '
+                  '"depends_on": ["t0"]}]}')
+        try:
+            res = self._reasoning_adapter(lead).complete(
+                system, [Message("user", text=prompt)], [])
+            self._usage.setdefault(lead["id"], Usage()).add(res.usage)
+            self.ledger.record("provider_call", f"DAG-план: {lead.get('short')}")
+            data = _extract_json(res.text)
+        except Exception as exc:
+            self.log.emit(f"DAG-планирование не удалось ({exc}) — обычный режим.")
+            return None
+        tasks = (data or {}).get("tasks")
+        if not tasks:
+            self.log.emit("DAG не получен — обычный режим.")
+            return None
+        issues = validate_dag(tasks, {p["id"] for p in self.providers})
+        if issues:
+            self.log.emit("DAG невалиден (" + "; ".join(issues[:3])
+                          + ") — обычный режим.")
+            return None
+        layers = topological_layers(tasks)
+        self.plan_ready.emit({
+            "overview": describe(layers),
+            "assignments": [
+                {"provider": n.provider, "title": n.title,
+                 "objective": n.objective, "files": n.files,
+                 "role": self._cfg(n.provider).get("strength", "")}
+                for layer in layers for n in layer]})
+        return layers
+
+    def _dag_implementers(self, layers) -> list[dict]:
+        seen: dict[str, dict] = {}
+        for layer in layers:
+            for node in layer:
+                seen.setdefault(node.provider, self._cfg(node.provider))
+        return list(seen.values())
+
+    def _dag_reviewer(self, implementers) -> dict | None:
+        """Prefer a reviewer that did NOT implement (independence); fall back to
+        the lead only if everyone implemented and there is more than one model."""
+        impl_ids = {p["id"] for p in implementers}
+        other = next((p for p in self.providers if p["id"] not in impl_ids), None)
+        if other:
+            return other
+        return self._lead_provider() if len(self.providers) > 1 else None
+
+    def _collect_patch(self, ws, short: str) -> str:
+        """Stage an agent's worktree, validate the patch against its PathPolicy,
+        and return it ("" on empty/violation). Ledger-records file writes."""
+        try:
+            patch = ws.stage_and_diff()
+        except WorkspaceError as exc:
+            self.log.emit(f"Патч {short} не собран: {exc}")
+            return ""
+        touched = patch_paths(patch)
+        violations = [p for p in touched if not ws.policy.can_write(p)]
+        if violations:
+            self.log.emit(f"⛔ Патч {short} отклонён: записи вне зоны "
+                          f"({', '.join(violations[:5])}).")
+            return ""
+        for path in touched:
+            self.ledger.record("file_write", path, agent=short)
+        return patch
+
+    def _execute_dag(self, layers, context):
+        """Run the DAG layer by layer. Each layer's tasks execute in parallel
+        isolated worktrees based on the previous layer's integrated commit;
+        the layer's patches are applied and committed so the next layer sees
+        them. Returns (summaries, integ, conflicts)."""
+        summaries: dict[str, str] = {}
+        all_conflicts: list[dict] = []
+        self.rw.create_integration_worktree()
+        for depth, layer in enumerate(layers):
+            if self.cancel_event.is_set():
+                break
+            base = self.rw.integration_head()
+            self.log.emit(
+                f"DAG · слой {depth + 1}/{len(layers)}: "
+                + ", ".join(f"{n.title}[{self._cfg(n.provider).get('short', n.provider)}]"
+                            for n in layer))
+            worktrees = []
+            for node in layer:
+                pid = node.provider
+                ws = self.rw.create_agent_worktree(
+                    node.id, allowed_paths=node.files or None,
+                    denied=SECRET_DENY, base_override=base)
+                worktrees.append((node, ws))
+                self._usage.setdefault(pid, Usage())
+                self.agent_cancels.setdefault(pid, threading.Event())
+                self.live_ids.add(pid)
+            threads = []
+            for node, ws in worktrees:
+                provider = self._cfg(node.provider)
+                assignment = {"provider": node.provider,
+                              "role": provider.get("strength", ""),
+                              "title": node.title, "objective": node.objective,
+                              "files": node.files}
+                self.agent_role.emit(node.provider, assignment)
+                node_key = f"{node.title} · {provider.get('short', node.provider)}"
+                t = threading.Thread(
+                    target=self._run_agent_in_worktree,
+                    args=(provider, assignment, ws, context, summaries),
+                    kwargs={"key": node_key}, daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
+            if self.cancel_event.is_set():
+                break
+            applied = False
+            for node, ws in worktrees:
+                short = self._cfg(node.provider).get("short", node.provider)
+                patch = self._collect_patch(ws, short)
+                if not patch.strip():
+                    continue
+                ok, msg = self.rw.apply_patch(patch)
+                if ok:
+                    applied = True
+                else:
+                    all_conflicts.append(
+                        {"provider": node.provider, "message": msg[:400]})
+                    self.log.emit(f"Конфликт интеграции {short}: {msg[:120]}")
+            if applied:
+                titles = ", ".join(n.title for n in layer)[:80]
+                self.rw.commit_integration(f"DAG слой {depth + 1}: {titles}")
+
+        full_diff = self.rw.integration_diff_range()
+        integ = {
+            "changed_files": self.rw.integration_changed_files_range(),
+            "conflicts": all_conflicts,
+            "diff": full_diff[:20000],
+        }
+        self.change_risk = assess_change(full_diff, integ["changed_files"])
+        integ["change_risk"] = self.change_risk.to_dict()
+        self._dag_committed = True
+        self.integration_ready.emit(integ)
+        return summaries, integ, all_conflicts
+
     # ---- execution --------------------------------------------------
     def _execute(self, implementers, assignments, context) -> dict[str, str]:
         self.assignments = assignments
@@ -849,8 +1044,10 @@ class Orchestrator(QThread):
             self._patches[pid] = patch
         return summaries
 
-    def _run_agent_in_worktree(self, provider, assignment, ws, context, summaries):
+    def _run_agent_in_worktree(self, provider, assignment, ws, context,
+                               summaries, key=None):
         pid = provider["id"]
+        skey = key or pid          # DAG runs key summaries per node, not per pid
         on_event = self._emit_agent(pid)
         on_event("status", "работает")
         combined = _Cancel(self.cancel_event, self.agent_cancels[pid], self.budget_event)
@@ -882,11 +1079,11 @@ class Orchestrator(QThread):
                                   int(self.orch.get("max_tool_iterations", 14)),
                                   combined, self._usage[pid],
                                   stream=self.orch.get("stream", False))
-            summaries[pid] = final
+            summaries[skey] = final
             self.live_ids.discard(pid)
             on_event("status", "отключён" if pid in self.disabled else "готово")
         except Exception as exc:
-            summaries[pid] = f"(ошибка: {exc})"
+            summaries[skey] = f"(ошибка: {exc})"
             self.live_ids.discard(pid)
             on_event("error", str(exc))
             on_event("status", "ошибка")
@@ -989,8 +1186,11 @@ class Orchestrator(QThread):
     # ---- report -----------------------------------------------------
     def _compose_report(self, summaries, review_notes, integ, verification) -> str:
         lead = self._lead_provider()
+        # summaries are keyed by provider id (normal flow) or a readable node
+        # label (DAG flow); .get keeps both safe.
         agent_parts = "\n\n".join(
-            f"### {self._cfg(pid)['label']}\n{summ}" for pid, summ in summaries.items())
+            f"### {self._cfg(pid).get('label', pid)}\n{summ}"
+            for pid, summ in summaries.items())
         vlines = "\n".join(f"- **{c.name}**: {c.status} ({c.summary})"
                            for c in verification.checks) or "- (проверок нет)"
         conflicts = "\n".join(f"- {c['provider']}: {c['message']}"
@@ -1084,7 +1284,13 @@ class Orchestrator(QThread):
             first = self._report.strip().splitlines()
             title = (self.orch.get("commit_prefix", "") +
                      (first[0].lstrip("# ").strip() if first else "Работа консилиума"))[:100]
-            commit = self.rw.commit_integration(title or "Работа консилиума")
+            if self._dag_committed:
+                # DAG layers already committed onto the integration branch; use
+                # the branch HEAD instead of committing empty staged changes.
+                head = self.rw.integration_head()
+                commit = head[:10] if head else None
+            else:
+                commit = self.rw.commit_integration(title or "Работа консилиума")
             result["commit"] = commit
             if commit is None:
                 result["message"] = "Изменений для коммита нет."

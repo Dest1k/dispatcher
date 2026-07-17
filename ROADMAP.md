@@ -32,10 +32,12 @@ architect → red-team → feasibility → synthesis — *before* implementation
 injects it into the planner and implementers; a **configurable escalation
 ladder** (`escalation_ladder`, default solo → pair, extendable to
 full_council; steps needing more providers are skipped and repeats deduped);
-and `full_council` as the vision's **complete reasoning pipeline** (it
-auto-deliberates before the parallel implementation). Planned: a validated
-task DAG scheduler; mid-run **hot-join** of a new agent (currently declined
-honestly).
+`full_council` as the vision's **complete reasoning pipeline** (it
+auto-deliberates before the parallel implementation); and a **task-DAG
+executor** (`dag_execution`) that runs a validated dependency graph in ordered
+layers — independent tasks parallel in isolated worktrees, dependent tasks
+building on prior layers' integrated commit. Planned: mid-run **hot-join** of a
+new agent (currently declined honestly).
 
 ## Phase 4 — Providers & auth ✅ (core)
 Done: dynamic registry, transport/auth/billing model, direct-API + local
