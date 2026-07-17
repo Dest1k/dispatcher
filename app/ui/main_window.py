@@ -1,6 +1,8 @@
 """Main application window."""
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import QThread, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -284,6 +286,10 @@ class MainWindow(QMainWindow):
         self.chat.clear()
         self._rebuild_agent_panels()
         self.send_btn.setEnabled(False)
+        # No active project → the project-specific actions have nothing to act
+        # on; disable them so it's clear they need a selected project.
+        for b in (self.open_btn, self.status_btn, self.edit_btn):
+            b.setEnabled(False)
 
     def _render_project(self) -> None:
         project = self._current_project()
@@ -291,6 +297,8 @@ class MainWindow(QMainWindow):
             self._render_empty()
             return
         self.send_btn.setEnabled(True)
+        for b in (self.open_btn, self.status_btn, self.edit_btn):
+            b.setEnabled(True)
         self.project_name.setText(project["name"])
         repo = project.get("github_repo") or "GitHub не указан"
         branch = project.get("branch", "main")
@@ -316,8 +324,16 @@ class MainWindow(QMainWindow):
 
     def _open_folder(self) -> None:
         project = self._current_project()
-        if project and project.get("local_path"):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(project["local_path"]))
+        if not project:
+            return
+        path = project.get("local_path", "")
+        if not path or not os.path.isdir(path):
+            QMessageBox.warning(
+                self, "Папка не найдена",
+                "Локальная папка проекта не существует:\n"
+                + (path or "(путь не задан)"))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _git_status(self) -> None:
         project = self._current_project()
@@ -335,6 +351,8 @@ class MainWindow(QMainWindow):
     def _open_runs(self) -> None:
         project = self._current_project()
         if not project:
+            QMessageBox.information(self, "Нет проекта",
+                                   "Сначала создай или выбери проект слева.")
             return
         from .runs_dialog import RunsDialog
         RunsDialog(self.run_store, self.config, project, parent=self).exec()
@@ -342,6 +360,8 @@ class MainWindow(QMainWindow):
     def _open_memory(self) -> None:
         project = self._current_project()
         if not project:
+            QMessageBox.information(self, "Нет проекта",
+                                   "Сначала создай или выбери проект слева.")
             return
         from .memory_dialog import MemoryDialog
         MemoryDialog(project, parent=self).exec()

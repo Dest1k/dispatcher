@@ -145,6 +145,50 @@ def test_no_autoping_on_startup(window, monkeypatch):
     assert window._limits_checker is None
 
 
+def test_project_buttons_disabled_without_project(window, monkeypatch, tmp_path):
+    """Regression: the 📂/⌥/✎ header buttons silently no-op'd with no active
+    project. Now they are disabled without one and enabled with one; opening a
+    missing folder warns instead of doing nothing."""
+    import app.cliagents as ca
+    monkeypatch.setattr(ca, "quick_ready", lambda flavor, home=None: False)
+    win = window
+    # fresh window with no projects → the three buttons are disabled
+    assert win._current_project() is None
+    assert not win.open_btn.isEnabled()
+    assert not win.status_btn.isEnabled()
+    assert not win.edit_btn.isEnabled()
+
+    # add a project → they enable and the handlers act
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    win.config.add_project("Demo", str(repo), "o/r",
+                           "https://github.com/o/r.git", "main", "")
+    win._refresh_projects()
+    assert win._current_project() is not None
+    assert win.open_btn.isEnabled() and win.status_btn.isEnabled() \
+        and win.edit_btn.isEnabled()
+
+    # _open_folder opens an existing dir…
+    from PySide6.QtGui import QDesktopServices
+    opened = {}
+    monkeypatch.setattr(QDesktopServices, "openUrl",
+                        staticmethod(lambda url: opened.setdefault("u", url.toString())))
+    win._open_folder()
+    assert "repo" in opened.get("u", "")
+
+    # …and warns (not silent) when the folder is gone
+    from PySide6.QtWidgets import QMessageBox
+    warned = {}
+    monkeypatch.setattr(QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warned.setdefault("w", a)))
+    win.config.update_project(win._current_project()["id"],
+                              local_path=str(tmp_path / "gone"))
+    win._render_project()
+    opened.clear()
+    win._open_folder()
+    assert "w" in warned and not opened      # warned, did not open
+
+
 def test_panel_toggle_running_does_not_crash(window, monkeypatch):
     """Toggling a panel while a run is live must route to the orchestrator's
     disable/hot-join controls without raising (regression: add_agent was
