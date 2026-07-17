@@ -339,6 +339,11 @@ class SettingsDialog(QDialog):
         self.auto_push.setChecked(o.get("auto_push", False))
         orch_form.addRow(self.auto_push)
 
+        self.auto_draft_pr = QCheckBox(
+            "Открывать черновой PR после пуша (нужен github-токен и репозиторий)")
+        self.auto_draft_pr.setChecked(o.get("auto_draft_pr", False))
+        orch_form.addRow(self.auto_draft_pr)
+
         self.max_iters = QSpinBox()
         self.max_iters.setRange(4, 100)
         self.max_iters.setValue(int(o.get("max_tool_iterations", 24)))
@@ -414,6 +419,7 @@ class SettingsDialog(QDialog):
             "budget_usd": self.budget_usd.value(),
             "stream": self.stream.isChecked(),
             "auto_push": self.auto_push.isChecked(),
+            "auto_draft_pr": self.auto_draft_pr.isChecked(),
             "max_tool_iterations": self.max_iters.value(),
             "command_timeout": self.command_timeout.value(),
             "verify_timeout": self.verify_timeout.value(),

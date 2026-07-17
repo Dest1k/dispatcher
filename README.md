@@ -91,6 +91,7 @@ dispatcher run "..." --dag                      # task graph: dependent tasks in
 dispatcher run "..." --project <path|id>  --providers claude_cli,codex_cli
 dispatcher run "..." --dry-run --show-diff     # run everything, publish nothing
 dispatcher run "..." --push                    # push the integration branch (never the target)
+dispatcher run "..." --push --draft-pr          # …and open a draft PR via the GitHub API
 ```
 
 **Safe by default:** an approved run commits only the isolated

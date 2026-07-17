@@ -1404,6 +1404,20 @@ class Orchestrator(QThread):
                                      f"{self.rw.integration_branch}. "
                                      + (f"Открыть PR: {pr_url}" if pr_url
                                         else "Открой из неё PR (в целевую ветку не пушим)."))
+                # Opt-in: open a real DRAFT PR via the GitHub API (never merges;
+                # the human un-drafts it). Falls back to the compare URL.
+                if self.orch.get("auto_draft_pr") and token \
+                        and self.project.get("github_repo"):
+                    pr = self._create_draft_pr(commit)
+                    if pr.get("created"):
+                        result["pr_url"] = pr.get("url") or pr_url
+                        result["pr_created"] = True
+                        result["message"] = (
+                            f"Коммит {commit} запушен. Черновой PR создан: "
+                            f"{pr.get('url')}")
+                    else:
+                        result["message"] += (
+                            f" Авто-PR не создан ({pr.get('message', '')}).")
             else:
                 result["message"] = (f"Коммит {commit} в локальной ветке "
                                      f"{self.rw.integration_branch}. Пуш не запрашивался.")
@@ -1417,6 +1431,26 @@ class Orchestrator(QThread):
         self.rw.cleanup(keep=[self.rw.integration_branch])
         state = RunState.PARTIAL if result["status"] == "partial" else RunState.COMPLETED
         self._finish(result, state)
+
+    def _create_draft_pr(self, commit: str) -> dict:
+        """Open a draft PR for the pushed integration branch (best-effort)."""
+        from .github_pr import create_draft_pr
+        base = self.project.get("branch") or "main"
+        title = (self.orch.get("commit_prefix", "")
+                 + (self._report.strip().splitlines()[0].lstrip("# ").strip()
+                    if self._report.strip() else "Работа консилиума"))[:100]
+        body = (f"Автоматический черновой PR из интеграционной ветки "
+                f"`{self.rw.integration_branch}` (коммит {commit}).\n\n"
+                + redact(self._report)[:8000]
+                + "\n\n_Создано Dispatcher. Проверьте и снимите статус draft._")
+        pr = create_draft_pr(self.project.get("github_repo", ""),
+                             self.rw.integration_branch, base, title, body,
+                             self.project.get("github_token", ""))
+        if pr.get("created"):
+            self.log.emit(f"Черновой PR создан: {pr.get('url')}")
+        else:
+            self.log.emit(f"Авто-PR не создан: {pr.get('message', '')}")
+        return pr
 
     def _finish(self, result: dict, state: RunState | None = None) -> None:
         if self.run_id and state is not None:

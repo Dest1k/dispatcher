@@ -14,7 +14,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 3 | Isolated multi-agent orchestration (worktrees, DAG, review, integrate) | ✅ isolation+integration+review+plan-validation+safe fallback+mid-run disable+**safe hot-join**+plan red-team critique+standalone council+adaptive escalation (configurable ladder)+council deliberation+full_council reasoning pipeline+task-DAG executor |
 | 4 | Provider/auth backends (transports, billing, local vLLM, **CLI sessions**) | ✅ core: registry+billing+local+API+retry/backoff+SSE+`cli_session` (claude/codex/grok через существующие логины, doctor, discovery моделей, native-режим, patch-boundary policy) |
 | 4.5 | Intelligence layer (v3) | ✅ capabilities+routing+reputation+council+memory graph+ledger+risk |
-| 5 | UI + publication (dashboard, diff, approvals, draft PR) | ◐ approval+diff+evidence+risk+billing labels+CLI-session forms+safety knobs+run-recovery done; run dashboard + 1-click PR planned |
+| 5 | UI + publication (dashboard, diff, approvals, draft PR) | ✅ approval+diff+evidence+risk+billing labels+CLI-session forms+safety knobs+run-recovery+live run dashboard+opt-in GitHub draft-PR creation |
 | 6 | Docs, packaging, hardening | ✅ docs + packaging + CI (GitHub Actions) done; more tests ongoing |
 
 ## Non-negotiable acceptance criteria (§18)
@@ -44,10 +44,10 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 21 | Secrets in OS secret store | ✅ (keyring w/ documented fallback) |
 | 22 | Logs/reports redact credentials | ✅ |
 | 23 | Full diff + verification evidence before approval | ✅ |
-| 24 | Draft PR after approval | ✅ push integration branch + one-click "compare/PR" URL; API PR creation optional (token/App) |
+| 24 | Draft PR after approval | ✅ push integration branch + one-click "compare/PR" URL + **opt-in real draft-PR creation via the GitHub API** (`auto_draft_pr`/`--draft-pr`, needs token+repo; falls back to compare URL) |
 | 25 | Reports stored consistently; no `.gitignore` contradiction | ✅ |
 | 26 | UI doesn't claim raw chain-of-thought | ✅ |
-| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (264 tests) |
+| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (272 tests) |
 | 28 | README describes only real functionality | ✅ |
 | 29 | User config migratable without losing projects | ✅ |
 | 30 | Original repo recoverable after failed/cancelled run | ✅ |
@@ -137,6 +137,12 @@ Test suite 77 → 100.
   before patches are collected (window closed under a lock); its patch
   integrates and it counts in reputation/outcome. Without a disjoint zone (or
   outside execution) it's declined honestly. UI prompts for the zone.
+- **GitHub draft-PR creation** (`app/github_pr.py`, `auto_draft_pr`/`--draft-pr`,
+  Settings checkbox): opt-in; after an approved run pushes the integration
+  branch, opens a real **draft** PR into the target branch via the GitHub REST
+  API using the project's token (never merges — the human un-drafts it). Never
+  raises; on any error (or no token/repo) it falls back to the one-click
+  compare URL. Token redacted in any surfaced message.
 - **Task planning engine** (`app/planner.py`, `dispatcher plan`): the vision's
   TASK PLANNING ENGINE — a phased plan (analyze → design → implement → test →
   **security** → review [→ release]) with per-phase agent routing, security/
@@ -169,7 +175,7 @@ Test suite 77 → 100.
   reset of corrupt config) — both fixed with regression tests; a live headless
   `dispatcher run` over the real Claude CLI created a file in an isolated
   worktree and the dry-run left the source repo completely untouched.
-- Test suite 100 → 264 (still no network, no real CLI spawns in tests; the
+- Test suite 100 → 272 (still no network, no real CLI spawns in tests; the
   new run/escalation e2e tests use real git with mocked providers/verification).
 
 ## Where to continue next

@@ -225,6 +225,7 @@ def _default_config() -> dict[str, Any]:
             "lead_provider": "claude_cli",
             "execution_mode": "pair",          # solo | pair | adaptive | full_council
             "auto_push": False,                # SAFETY: never push automatically
+            "auto_draft_pr": False,            # opt-in: open a draft PR after push
             "publish_default": "integration_branch",  # never the target branch
             "require_verification": True,
             "council_planning": False,         # red-team plan critique (opt-in)

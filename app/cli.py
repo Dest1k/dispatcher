@@ -213,6 +213,8 @@ def cmd_run(args) -> int:
         cfg.orchestration["deliberate"] = True
     if args.dag:
         cfg.orchestration["dag_execution"] = True
+    if args.draft_pr:
+        cfg.orchestration["auto_draft_pr"] = True
     if args.providers:
         # honor an explicit subset by disabling the rest for this run
         wanted = {p["id"] for p in providers}
@@ -651,6 +653,9 @@ def build_parser() -> argparse.ArgumentParser:
                           "верификации или высоком риске")
     run.add_argument("--push", action="store_true",
                      help="запушить интеграционную ветку (не целевую)")
+    run.add_argument("--draft-pr", action="store_true",
+                     help="после пуша открыть черновой PR через GitHub API "
+                          "(нужен github-токен и репозиторий у проекта)")
     run.add_argument("--dry-run", action="store_true",
                      help="показать результат и отклонить публикацию")
     run.add_argument("--show-diff", action="store_true")
