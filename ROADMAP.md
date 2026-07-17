@@ -67,8 +67,9 @@ one-click compare/PR URL; run history + event timeline; run recovery; safety
 knobs + budget in settings; **headless `dispatcher run`** (full pipeline from
 the terminal with a safe publication-decision policy); a **project-memory
 browser** (filter/search decisions, bugs, lessons, approaches with their
-reasoned links). Planned: run dashboard (task graph), richer diff viewer,
-API-based draft PR (needs a GitHub token/App).
+reasoned links); a **live run dashboard** (phase strip, plan/task-graph,
+per-agent roles+statuses, integration + verification at a glance). Planned:
+richer diff viewer, API-based draft PR (needs a GitHub token/App).
 
 ## Phase 6 — Docs, packaging, hardening 🚧
 Done: README/ARCHITECTURE/SECURITY/PROVIDERS/AUDIT_REPORT/FINAL_REPORT;

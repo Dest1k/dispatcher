@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         self._limits_checker: LimitsChecker | None = None
         self._last_diff: str = ""
         self.run_store = RunStore()
+        self.dashboard = None          # lazily created RunDashboard
 
         self.setWindowTitle("Multi-AI Control Center — Claude · ChatGPT · Grok")
         self.resize(1360, 860)
@@ -107,6 +108,11 @@ class MainWindow(QMainWindow):
         memory_btn.setObjectName("Ghost")
         memory_btn.clicked.connect(self._open_memory)
         v.addWidget(memory_btn)
+
+        dashboard_btn = QPushButton("📊 Панель прогона")
+        dashboard_btn.setObjectName("Ghost")
+        dashboard_btn.clicked.connect(self._open_dashboard)
+        v.addWidget(dashboard_btn)
 
         settings_btn = QPushButton("⚙ Настройки моделей")
         settings_btn.setObjectName("Ghost")
@@ -340,6 +346,20 @@ class MainWindow(QMainWindow):
         from .memory_dialog import MemoryDialog
         MemoryDialog(project, parent=self).exec()
 
+    def _dash(self):
+        """The (lazily created) run dashboard — a live, non-modal view fed from
+        the orchestrator signal handlers below."""
+        if self.dashboard is None:
+            from .run_dashboard import RunDashboard
+            self.dashboard = RunDashboard(self)
+        return self.dashboard
+
+    def _open_dashboard(self) -> None:
+        dash = self._dash()
+        dash.show()
+        dash.raise_()
+        dash.activateWindow()
+
     def _open_settings(self) -> None:
         dlg = SettingsDialog(self.config, parent=self)
         if dlg.exec():
@@ -466,6 +486,13 @@ class MainWindow(QMainWindow):
         self.live_usage.clear()
         self.usage_label.setText("")
 
+        dash = self._dash()
+        dash.reset()
+        dash.set_phase("planning")
+        for p in self.config.active_providers():
+            dash.set_agent(p["id"], label=p.get("label", p["id"]),
+                           status="ожидание")
+
         self.orchestrator = Orchestrator(self.config, project, instruction,
                                          store=self.run_store)
         self.running_project_id = project["id"]
@@ -516,14 +543,21 @@ class MainWindow(QMainWindow):
         self.chat.add_message("system", text)
         if self.running_project_id:
             self.config.add_chat_message(self.running_project_id, "system", text)
+        self._dash().set_plan(plan)
+        self._dash().set_phase("executing")
 
     def _on_agent_role(self, provider_id: str, assignment: dict) -> None:
         panel = self.agent_panels.get(provider_id)
         if panel:
             panel.set_role(assignment)
+        self._dash().set_agent(
+            provider_id, label=self.config.providers.get(provider_id, {}).get("label"),
+            role=assignment.get("role", ""), status="работает")
 
     def _on_agent_event(self, provider_id: str, kind: str, payload: str) -> None:
         panel = self.agent_panels.get(provider_id)
+        if kind == "status":
+            self._dash().set_agent(provider_id, status=payload)
         if panel:
             panel.add_event(kind, payload)
             if kind == "status" and payload in (
@@ -574,6 +608,8 @@ class MainWindow(QMainWindow):
         if conflicts:
             msg += f", конфликтов: {len(conflicts)}"
         self._on_log(msg)
+        self._dash().set_phase("integrating")
+        self._dash().set_integration(integ)
 
     def _on_verification_ready(self, verification: dict) -> None:
         status = verification.get("status", "unknown")
@@ -583,8 +619,11 @@ class MainWindow(QMainWindow):
         self.chat.add_message("system", text)
         if self.running_project_id:
             self.config.add_chat_message(self.running_project_id, "system", text)
+        self._dash().set_phase("verifying")
+        self._dash().set_verification(verification)
 
     def _on_awaiting_approval(self, payload: dict) -> None:
+        self._dash().set_phase("awaiting")
         dlg = ApprovalDialog(payload, self._last_diff, parent=self)
         dlg.exec()
         action, push = dlg.decision
@@ -605,6 +644,7 @@ class MainWindow(QMainWindow):
                 meta={"usage": usage})
 
     def _on_run_finished(self, result: dict) -> None:
+        self._dash().set_phase("done")
         message = result.get("message", "")
         status = result.get("status")
         icon = {"done": "✔", "partial": "⚠", "cancelled": "⏹"}.get(status, "")

@@ -118,6 +118,28 @@ def test_settings_save_keeps_cli_fields(qapp, tmp_config, monkeypatch):
     dlg.close()
 
 
+def test_run_dashboard_fed_by_handlers(window):
+    win = window
+    win._on_plan_ready({"overview": "обзор плана",
+                        "assignments": [{"title": "Задача A", "role": "developer",
+                                         "objective": "сделать", "files": ["f.py"]}]})
+    win._on_agent_role("anthropic", {"role": "архитектор", "objective": "x",
+                                     "files": []})
+    win._on_agent_event("anthropic", "status", "работает")
+    win._on_integration_ready({"changed_files": ["f.py"], "conflicts": [],
+                               "diff": "", "change_risk": {"level": "low"}})
+    win._on_verification_ready({"status": "pass",
+                                "checks": [{"name": "t", "status": "pass"}]})
+    dash = win._dash()
+    assert dash.current_phase == "verifying"
+    assert "Задача A" in dash.plan_view.toPlainText()
+    assert dash.agents.rowCount() >= 1
+    assert "файлов 1" in dash.integration_label.text()
+    assert "pass" in dash.verification_label.text()
+    win._on_run_finished({"status": "done", "message": "готово"})
+    assert dash.current_phase == "done"
+
+
 def test_no_autoping_on_startup(window, monkeypatch):
     # Constructing the window must not have started a LimitsChecker (no paid ping).
     assert window._limits_checker is None
