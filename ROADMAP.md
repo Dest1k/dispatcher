@@ -72,7 +72,9 @@ browser** (filter/search decisions, bugs, lessons, approaches with their
 reasoned links); a **live run dashboard** (phase strip, plan/task-graph,
 per-agent roles+statuses, integration + verification at a glance); and
 **opt-in GitHub draft-PR creation** (`auto_draft_pr`, after push, via the REST
-API, falling back to the compare URL). Planned: richer diff viewer.
+API, falling back to the compare URL); and a **colored per-file diff viewer**
+(`ui/diff_view.py`, used in the approval dialog — added/removed/hunk styling,
+a file selector, and +N/−N stats). Phase 5 complete.
 
 ## Phase 6 — Docs, packaging, hardening 🚧
 Done: README/ARCHITECTURE/SECURITY/PROVIDERS/AUDIT_REPORT/FINAL_REPORT;

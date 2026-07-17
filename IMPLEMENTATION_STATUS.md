@@ -47,7 +47,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 24 | Draft PR after approval | ✅ push integration branch + one-click "compare/PR" URL + **opt-in real draft-PR creation via the GitHub API** (`auto_draft_pr`/`--draft-pr`, needs token+repo; falls back to compare URL) |
 | 25 | Reports stored consistently; no `.gitignore` contradiction | ✅ |
 | 26 | UI doesn't claim raw chain-of-thought | ✅ |
-| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (272 tests) |
+| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (280 tests) |
 | 28 | README describes only real functionality | ✅ |
 | 29 | User config migratable without losing projects | ✅ |
 | 30 | Original repo recoverable after failed/cancelled run | ✅ |
@@ -143,6 +143,9 @@ Test suite 77 → 100.
   API using the project's token (never merges — the human un-drafts it). Never
   raises; on any error (or no token/repo) it falls back to the one-click
   compare URL. Token redacted in any surfaced message.
+- **Colored per-file diff viewer** (`ui/diff_view.py`, `DiffView`): the approval
+  dialog now shows the diff with added/removed/hunk/file-header styling, a file
+  selector to focus one file (or all), and a +N/−N stat. Reusable widget.
 - **Task planning engine** (`app/planner.py`, `dispatcher plan`): the vision's
   TASK PLANNING ENGINE — a phased plan (analyze → design → implement → test →
   **security** → review [→ release]) with per-phase agent routing, security/
@@ -175,7 +178,7 @@ Test suite 77 → 100.
   reset of corrupt config) — both fixed with regression tests; a live headless
   `dispatcher run` over the real Claude CLI created a file in an isolated
   worktree and the dry-run left the source repo completely untouched.
-- Test suite 100 → 272 (still no network, no real CLI spawns in tests; the
+- Test suite 100 → 280 (still no network, no real CLI spawns in tests; the
   new run/escalation e2e tests use real git with mocked providers/verification).
 
 ## Where to continue next

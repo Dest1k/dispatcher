@@ -3,8 +3,10 @@ commit/push. Publication of unverified work is blocked here, not in a prompt."""
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout,
+    QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
+
+from .diff_view import DiffView
 
 _STATUS = {
     "pass": ("#3fb950", "верификация пройдена"),
@@ -46,10 +48,9 @@ class ApprovalDialog(QDialog):
             v.addWidget(QLabel("Проверки: " + ev))
 
         v.addWidget(QLabel("Полный дифф (в исходный репозиторий пока НЕ применён):"))
-        browser = QTextBrowser()
-        browser.setStyleSheet("font-family:'Consolas','Menlo',monospace; font-size:12px;")
-        browser.setPlainText(diff or "(изменений нет)")
-        v.addWidget(browser, 1)
+        self.diff_view = DiffView()
+        self.diff_view.set_diff(diff or "")
+        v.addWidget(self.diff_view, 1)
 
         can_publish = payload.get("can_autopublish", False)
         row = QHBoxLayout()
