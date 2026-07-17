@@ -431,6 +431,45 @@ def _save_report(markdown: str, prefix: str) -> str:
         return ""
 
 
+def cmd_plan(args) -> int:
+    from .config import Config
+    from .planner import generate_plan
+    from .reputation import ReputationStore
+    cfg = Config.load()
+    providers = _load_active_providers(cfg, args.providers)
+    if not providers:
+        _p("Нет активных провайдеров. Проверь `dispatcher doctor`.")
+        return 1
+    project_id, workdir = _project_key(cfg, args.project)
+    project = next((p for p in cfg.projects if p.get("id") == project_id), None)
+    has_remote = bool(project and project.get("github_repo"))
+    lead_id = cfg.orchestration.get("lead_provider", "")
+    lead = next((p for p in providers if p["id"] == lead_id), providers[0])
+    if args.timeout:
+        for p in providers:
+            p["cli_timeout"] = args.timeout
+
+    if not args.json:
+        _p(f"Планирую задачу ({'с уточнением моделью' if not args.no_enrich else 'шаблон'})…")
+    plan = generate_plan(args.task, providers, lead=lead,
+                         reputation=ReputationStore(), has_remote=has_remote,
+                         workdir=workdir, enrich=not args.no_enrich)
+    if args.json:
+        _p(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        _p("\n" + plan.to_markdown())
+
+    # Record the plan in project memory as a task node.
+    try:
+        from .memory_graph import MemoryGraph
+        MemoryGraph().add_node(project_id, "task",
+                               f"План: {args.task[:120]}",
+                               body=plan.to_markdown()[:4000])
+    except Exception:
+        pass
+    return 0
+
+
 def cmd_route(args) -> int:
     from .config import Config
     from .reputation import ReputationStore
@@ -618,6 +657,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="таймаут одного вызова CLI, секунд")
     c.add_argument("--json", action="store_true")
     c.set_defaults(func=cmd_council)
+
+    pl = sub.add_parser("plan", help="фазовый план выполнения задачи (без запуска)")
+    pl.add_argument("task")
+    pl.add_argument("--project", default="",
+                    help="проект (id/имя из конфига или путь; по умолчанию cwd)")
+    pl.add_argument("--providers", default="")
+    pl.add_argument("--no-enrich", action="store_true",
+                    help="не уточнять детали моделью (только шаблон, без вызовов)")
+    pl.add_argument("--timeout", type=int, default=0)
+    pl.add_argument("--json", action="store_true")
+    pl.set_defaults(func=cmd_plan)
 
     r = sub.add_parser("route", help="объяснимая маршрутизация задачи по ролям")
     r.add_argument("task")

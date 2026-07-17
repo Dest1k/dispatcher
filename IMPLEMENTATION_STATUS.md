@@ -47,7 +47,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 24 | Draft PR after approval | ✅ push integration branch + one-click "compare/PR" URL; API PR creation optional (token/App) |
 | 25 | Reports stored consistently; no `.gitignore` contradiction | ✅ |
 | 26 | UI doesn't claim raw chain-of-thought | ✅ |
-| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (210 tests) |
+| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (221 tests) |
 | 28 | README describes only real functionality | ✅ |
 | 29 | User config migratable without losing projects | ✅ |
 | 30 | Original repo recoverable after failed/cancelled run | ✅ |
@@ -125,6 +125,11 @@ Test suite 77 → 100.
 - **Project-memory browser** (`ui/memory_dialog.py`, «🧠 Память проекта»):
   read-only window over the memory graph — filter by kind, search, inspect a
   node with its reasoned links (why/what failed/what was rejected).
+- **Task planning engine** (`app/planner.py`, `dispatcher plan`): the vision's
+  TASK PLANNING ENGINE — a phased plan (analyze → design → implement → test →
+  **security** → review [→ release]) with per-phase agent routing, security/
+  review actively kept off the implementer (VERIFICATION LOOP «no self-review»),
+  and best-effort per-phase detail from the lead. Read-only; recorded in memory.
 - Live validation on this machine: `doctor` 3/3 ready; `--probe` round-trips
   pong via claude (3.2 s), codex (11.4 s), grok (3.5 s); a live
   `full_council` ran the whole architect→red-team→feasibility→synthesis
@@ -132,7 +137,7 @@ Test suite 77 → 100.
   reset of corrupt config) — both fixed with regression tests; a live headless
   `dispatcher run` over the real Claude CLI created a file in an isolated
   worktree and the dry-run left the source repo completely untouched.
-- Test suite 100 → 210 (still no network, no real CLI spawns in tests; the
+- Test suite 100 → 221 (still no network, no real CLI spawns in tests; the
   new run/escalation e2e tests use real git with mocked providers/verification).
 
 ## Where to continue next

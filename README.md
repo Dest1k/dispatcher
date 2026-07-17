@@ -107,6 +107,7 @@ approach into the implementers.
 ## The AI Council
 
 ```bash
+dispatcher plan    "Refactor the auth system"                               # phased execution plan (no run)
 dispatcher council "стоит ли переходить на event sourcing?"                 # independent opinions + synthesis
 dispatcher council "..." --mode solo|pair|council|full_council
 dispatcher route  "Refactor authentication system"                          # explainable role routing
@@ -114,6 +115,13 @@ dispatcher capabilities                                                     # wh
 dispatcher reputation                                                       # measured outcomes per agent
 dispatcher memory list|show|add|pack                                        # project memory graph
 ```
+
+`dispatcher plan` generates a **phased execution plan** — analyze → design →
+implement → test → **security** → review (→ release when a remote is set) —
+routing each phase to the best-fit agent, keeping the security/review phases
+off the implementer (*no agent reviews its own code*), and enriching each
+phase's detail with the lead model. It's read-only (no files touched) and
+records the plan in the project memory graph.
 
 `full_council` runs the reasoning pipeline: **architect proposal → red-team
 attack → implementation feasibility → lead synthesis**, with role casting by

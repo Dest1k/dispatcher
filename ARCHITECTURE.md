@@ -9,8 +9,9 @@ background orchestration engine and an intelligence layer.
 app/
   config.py            projects + dynamic provider profiles; secret-ref persistence
   cliagents.py         discovery of official CLIs: install/auth/models/readiness
+  planner.py           phased task-planning engine (analyze→…→security→review)
   cli.py               `dispatcher` entry: doctor, run (headless orchestration),
-                       council, route, capabilities, reputation, memory, gui
+                       plan, council, route, capabilities, reputation, memory, gui
   security/            redaction, path-ownership policy, OS secret store
   providers/           provider-neutral messages/tools + adapters:
                        anthropic (REST), openai_compat (REST/SSE),
