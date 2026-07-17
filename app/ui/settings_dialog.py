@@ -284,7 +284,8 @@ class SettingsDialog(QDialog):
 
         self.sandbox_mode = QComboBox()
         self.sandbox_mode.addItem("Ограниченный (без секретов, без сети) — рекомендуется", "restricted")
-        self.sandbox_mode.addItem("Docker (строгая изоляция, нужен Docker)", "docker")
+        self.sandbox_mode.addItem("Docker · контейнер на агента (состояние сохраняется)", "docker")
+        self.sandbox_mode.addItem("Docker · контейнер на команду (без состояния)", "docker_command")
         self.sandbox_mode.addItem("⚠ Небезопасный локальный (полное окружение хоста)", "unsafe_local")
         sb_idx = self.sandbox_mode.findData(o.get("sandbox_mode", "restricted"))
         self.sandbox_mode.setCurrentIndex(max(0, sb_idx))

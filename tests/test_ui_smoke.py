@@ -41,7 +41,8 @@ def test_settings_dialog_dynamic_tabs(qapp, tmp_config):
     # one tab per provider + the orchestration tab
     assert dlg.tabs.count() == len(cfg.ordered_providers()) + 1
     # safety knobs are exposed in the UI, not just JSON
-    assert dlg.sandbox_mode.count() == 3
+    # restricted / docker (per-agent) / docker_command / unsafe_local
+    assert dlg.sandbox_mode.count() == 4
     assert dlg.execution_mode.count() == 4
     assert dlg.require_verification is not None
     # execution-time limits are editable knobs, not just JSON

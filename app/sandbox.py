@@ -13,8 +13,11 @@ and touch files anywhere. This module runs commands with:
 Backends:
   * `restricted` (default) — the above, on the host. Network is best-effort
     (isolated only if a Linux network namespace can be created).
-  * `docker`   — one container per command: only the worktree mounted, no home,
-    no docker socket, `--network none` by default, CPU/memory/pids limits.
+  * `docker` — one long-lived container **per agent worktree**
+    (container-per-agent): only the worktree mounted, no home, no docker
+    socket, `--network none` by default, CPU/memory/pids limits; state persists
+    across the agent's commands.
+  * `docker_command` — one container **per command** (stateless, max isolation).
   * `unsafe_local` — full host environment; the old, dangerous behavior. Only
     when explicitly selected; still redacts output.
 """
@@ -190,6 +193,8 @@ class UnsafeLocalSandbox(_BaseSandbox):
 
 
 class DockerSandbox(_BaseSandbox):
+    """One container per command (stateless, maximum isolation)."""
+
     backend = "docker"
 
     def __init__(self, workdir: str, image: str = "python:3.12-slim",
@@ -212,15 +217,98 @@ class DockerSandbox(_BaseSandbox):
         return self._run_proc(args, {"PATH": _safe_path()}, cancel, network)
 
 
+class DockerAgentSandbox(_BaseSandbox):
+    """One long-lived container **per agent worktree** (container-per-agent).
+
+    Started lazily on the first command and reused for all of the agent's
+    commands, so installed packages and created state persist across commands
+    the way a real dev environment does. Mounts only the worktree at /work,
+    with no home, no docker socket, no host-env passthrough, `--network none`
+    by default, and CPU/memory/pids caps. On a command timeout or cancel the
+    container is force-removed so nothing runs away; the next command recreates
+    it (worktree files survive on the host mount). `close()` stops it.
+    """
+
+    backend = "docker"
+
+    def __init__(self, workdir: str, image: str = "python:3.12-slim",
+                 allow_network: bool = False, timeout: int = 300):
+        super().__init__(workdir, allow_network, timeout)
+        self.image = image
+        self._cid: str | None = None
+        self._lock = threading.Lock()
+        if shutil.which("docker") is None:
+            raise RuntimeError("docker недоступен")
+
+    def _docker(self, args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
+        return subprocess.run(["docker", *args], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=timeout)
+
+    def _alive(self) -> bool:
+        if not self._cid:
+            return False
+        try:
+            r = self._docker(["inspect", "-f", "{{.State.Running}}", self._cid],
+                             timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return r.returncode == 0 and r.stdout.strip() == "true"
+
+    def _ensure(self) -> str:
+        with self._lock:
+            if self._cid and self._alive():
+                return self._cid
+            net = "bridge" if self.allow_network else "none"
+            r = self._docker([
+                "run", "-d", "--rm", "--network", net,
+                "-v", f"{self.workdir}:/work:rw", "-w", "/work",
+                "--memory", "2g", "--cpus", "2", "--pids-limit", "512",
+                # no --env passthrough, no docker socket, no home mount
+                self.image, "sh", "-c", "sleep 86400"])
+            if r.returncode != 0:
+                raise RuntimeError(
+                    (r.stderr or r.stdout or "docker run failed").strip()[:200])
+            self._cid = r.stdout.strip()
+            return self._cid
+
+    def run(self, command: str, cancel: threading.Event | None = None) -> SandboxResult:
+        network = "bridge" if self.allow_network else "none"
+        try:
+            cid = self._ensure()
+        except Exception as exc:
+            return SandboxResult(exit_code=None,
+                                 output=_redact(f"docker: {exc}"),
+                                 backend=self.backend, network=network)
+        args = ["docker", "exec", "-i", "-w", "/work", cid, "sh", "-c", command]
+        result = self._run_proc(args, {"PATH": _safe_path()}, cancel, network)
+        if result.timed_out or result.cancelled:
+            self._destroy()          # no runaway process; next run recreates
+        return result
+
+    def _destroy(self) -> None:
+        with self._lock:
+            cid, self._cid = self._cid, None
+        if cid:
+            try:
+                self._docker(["rm", "-f", cid], timeout=30)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+    def close(self) -> None:
+        self._destroy()
+
+
 def make_sandbox(mode: str, workdir: str, allow_network: bool = False,
                  timeout: int = 300) -> _BaseSandbox:
     """Factory. Falls back to restricted (with .fell_back=True) if docker asked
-    for but unavailable."""
+    for but unavailable. `docker` = container-per-agent (persistent);
+    `docker_command` = one container per command (stateless)."""
     if mode == "unsafe_local":
         return UnsafeLocalSandbox(workdir, allow_network, timeout)
-    if mode == "docker":
+    if mode in ("docker", "docker_command"):
+        cls = DockerSandbox if mode == "docker_command" else DockerAgentSandbox
         try:
-            return DockerSandbox(workdir, allow_network=allow_network, timeout=timeout)
+            return cls(workdir, allow_network=allow_network, timeout=timeout)
         except Exception:
             sb = LocalRestrictedSandbox(workdir, allow_network, timeout)
             sb.fell_back = True  # type: ignore[attr-defined]

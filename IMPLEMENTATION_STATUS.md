@@ -24,7 +24,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 1 | Two implementation agents never share a writable worktree | ✅ |
 | 2 | File ownership technically enforced | ✅ |
 | 3 | Planner failure can't trigger unsafe full parallelism | ✅ |
-| 4 | Host shell execution not the default | ◐ restricted worker (env-scrubbed, temp HOME, no secrets/network) default; Docker/WSL2 backend = interface + fallback |
+| 4 | Host shell execution not the default | ✅ restricted worker (env-scrubbed, temp HOME, no secrets/network) default; Docker **container-per-agent** (persistent) + per-command backends, live-verified on WSL2/Docker, fallback to restricted when absent |
 | 5 | Provider secrets unavailable to worker commands | ✅ |
 | 6 | Existing user changes can't be accidentally committed | ✅ |
 | 7 | Integration doesn't use broad `git add -A` | ✅ |
@@ -47,7 +47,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 24 | Draft PR after approval | ✅ push integration branch + one-click "compare/PR" URL; API PR creation optional (token/App) |
 | 25 | Reports stored consistently; no `.gitignore` contradiction | ✅ |
 | 26 | UI doesn't claim raw chain-of-thought | ✅ |
-| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (243 tests) |
+| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (251 tests) |
 | 28 | README describes only real functionality | ✅ |
 | 29 | User config migratable without losing projects | ✅ |
 | 30 | Original repo recoverable after failed/cancelled run | ✅ |
@@ -142,6 +142,14 @@ Test suite 77 → 100.
   QThread) otherwise, so the engine imports and runs **without PySide6** on a
   headless server. `dispatcher run` makes Qt optional too. Verified by importing
   the orchestrator with PySide6 blocked.
+- **Docker container-per-agent** (`app/sandbox.py` `DockerAgentSandbox`,
+  `sandbox_mode: docker`): one long-lived container per agent worktree, reused
+  across the agent's commands (state persists), started lazily and removed on
+  close or on a command timeout/cancel; mounts only the worktree, `--network
+  none` by default, no host-env/secret passthrough, no docker socket, CPU/mem/
+  pids caps. `docker_command` keeps the stateless one-container-per-command
+  mode. Live-verified on Docker 29.6/WSL2 (cross-command persistence + no host
+  secrets inside).
 - Live validation on this machine: `doctor` 3/3 ready; `--probe` round-trips
   pong via claude (3.2 s), codex (11.4 s), grok (3.5 s); a live
   `full_council` ran the whole architect→red-team→feasibility→synthesis
@@ -149,7 +157,7 @@ Test suite 77 → 100.
   reset of corrupt config) — both fixed with regression tests; a live headless
   `dispatcher run` over the real Claude CLI created a file in an isolated
   worktree and the dry-run left the source repo completely untouched.
-- Test suite 100 → 243 (still no network, no real CLI spawns in tests; the
+- Test suite 100 → 251 (still no network, no real CLI spawns in tests; the
   new run/escalation e2e tests use real git with mocked providers/verification).
 
 ## Where to continue next

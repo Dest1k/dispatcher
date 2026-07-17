@@ -74,6 +74,14 @@ itself (a branch checked out elsewhere cannot be checked out again).
   labeled `host (не изолирована)`. **For strict network isolation, use the Docker
   backend** (`--network none`, mounts only the worktree, no docker socket, CPU/
   memory/pid limits). Set `sandbox_mode: "docker"` in orchestration settings.
+  `docker` runs **one long-lived container per agent worktree**
+  (container-per-agent: state persists across the agent's commands; on a
+  command timeout/cancel the container is force-removed so nothing runs away);
+  `docker_command` runs one container per command (stateless, maximum
+  isolation). Both scrub host env (no keys/tokens), mount only the worktree,
+  attach no docker socket, and cap CPU/memory/pids. Verified live: a command
+  wrote a file outside the mount and a later command in the same agent read it
+  back, while `API_KEY`/`TOKEN`/`SECRET` env stayed absent inside.
 - **Keyring availability**: if `keyring` (or a working OS backend) is
   unavailable, secrets fall back to a `0600` file under the config dir and
   `SecretStore.is_secure()` returns `False`. Prefer installing `keyring`.
