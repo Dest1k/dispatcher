@@ -114,8 +114,13 @@ ledger: evidence per run → report section + claim checks
 
 ## Threading
 
-The orchestrator is a `QThread`; implementation agents run as worker threads,
+The orchestrator is a `QThread` when PySide6 is present (the GUI needs Qt's
+queued cross-thread signal delivery). When PySide6 is **absent** (a headless
+server), it falls back to a Qt-free shim (`app/eventbus.py`: a `Signal`
+descriptor + a `threading.Thread`-backed `QThread`), so the engine imports and
+runs without any Qt dependency. Implementation agents run as worker threads,
 each in its own worktree/sandbox; CLI subprocesses are killed as process trees
-on cancel/timeout. Council (`council.py`) is pure Python — usable headless.
-All UI updates happen on the UI thread via queued signals. The run blocks on a
+on cancel/timeout. Council (`council.py`) and the planner (`planner.py`) are
+pure Python. `dispatcher run` drives the engine synchronously (DirectConnection
+signals under Qt, synchronous callbacks under the shim). The run blocks on a
 threading `Event` at the approval gate.

@@ -47,7 +47,7 @@ session can see exactly where to continue. `pytest -q` is the source of truth fo
 | 24 | Draft PR after approval | ✅ push integration branch + one-click "compare/PR" URL; API PR creation optional (token/App) |
 | 25 | Reports stored consistently; no `.gitignore` contradiction | ✅ |
 | 26 | UI doesn't claim raw chain-of-thought | ✅ |
-| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (233 tests) |
+| 27 | Tests cover git/sandbox/orchestration/persistence/security | ✅ git/sandbox/security/providers/persistence/resume/e2e/planning/mid-run/publish-redaction + CLI-agents/adapter/council/routing/reputation/memory/ledger/risk/headless-run/adaptive-escalation (243 tests) |
 | 28 | README describes only real functionality | ✅ |
 | 29 | User config migratable without losing projects | ✅ |
 | 30 | Original repo recoverable after failed/cancelled run | ✅ |
@@ -136,6 +136,12 @@ Test suite 77 → 100.
   ordered rounds — independent tasks parallel in isolated worktrees, dependent
   tasks in later layers built on the previous layers' integrated commit
   (incremental commit per layer). Opt-in; default path unchanged.
+- **Orchestrator decoupled from Qt** (`app/eventbus.py`): the orchestrator uses
+  PySide6's `QThread`/`Signal` when present (GUI keeps Qt's queued cross-thread
+  delivery) and a Qt-free shim (Signal descriptor + threading.Thread-backed
+  QThread) otherwise, so the engine imports and runs **without PySide6** on a
+  headless server. `dispatcher run` makes Qt optional too. Verified by importing
+  the orchestrator with PySide6 blocked.
 - Live validation on this machine: `doctor` 3/3 ready; `--probe` round-trips
   pong via claude (3.2 s), codex (11.4 s), grok (3.5 s); a live
   `full_council` ran the whole architect→red-team→feasibility→synthesis
@@ -143,16 +149,14 @@ Test suite 77 → 100.
   reset of corrupt config) — both fixed with regression tests; a live headless
   `dispatcher run` over the real Claude CLI created a file in an isolated
   worktree and the dry-run left the source repo completely untouched.
-- Test suite 100 → 233 (still no network, no real CLI spawns in tests; the
+- Test suite 100 → 243 (still no network, no real CLI spawns in tests; the
   new run/escalation e2e tests use real git with mocked providers/verification).
 
 ## Where to continue next
 
-1. Extend adaptive escalation beyond one step (solo → pair → full_council) and
-   make the escalation ladder configurable.
-2. Docker container-per-agent for the implementation step; richer run
-   dashboard / task-graph view; API-based draft PR (needs GitHub token/App);
-   memory-graph browser in the UI.
-3. A validated task-DAG scheduler (dependencies/cycles/budget) above the
-   current disjoint-zones planner.
-4. Fully decouple the orchestrator from QThread (server use without PySide6).
+1. Docker container-per-agent for the *implementation* step (commands already
+   sandbox in Docker per-command).
+2. Richer run dashboard / task-graph view; API-based draft PR (needs a GitHub
+   token/App).
+3. Mid-run hot-join of a new agent (currently declined honestly — needs a fresh
+   isolated worktree with a disjoint zone + re-planning).

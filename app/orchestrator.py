@@ -27,7 +27,12 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
+try:
+    # The GUI needs Qt's queued cross-thread signal delivery; when PySide6 is
+    # absent (headless server), a Qt-free shim provides the small subset used.
+    from PySide6.QtCore import QThread, Signal
+except ImportError:  # pragma: no cover - exercised only without PySide6
+    from .eventbus import QThread, Signal
 
 from .budget import BudgetGuard
 from .domain import RunState

@@ -185,7 +185,15 @@ def _resolve_project(cfg, project: str) -> dict | None:
 
 
 def cmd_run(args) -> int:
-    from PySide6.QtCore import QCoreApplication, Qt
+    # Qt is optional: with PySide6 present we create a QCoreApplication and use
+    # DirectConnection (synchronous, no display needed); without it the
+    # orchestrator's Qt-free signal shim delivers callbacks synchronously.
+    try:
+        from PySide6.QtCore import QCoreApplication, Qt
+        QCoreApplication.instance() or QCoreApplication([])
+        _conn = (Qt.DirectConnection,)
+    except ImportError:
+        _conn = ()
 
     from .config import Config
     from .orchestrator import Orchestrator
@@ -284,17 +292,16 @@ def cmd_run(args) -> int:
     def on_error(msg: str) -> None:
         state["error"] = msg
 
-    d = Qt.DirectConnection
-    orc.log.connect(log, d)
-    orc.deliberation_ready.connect(on_deliberation, d)
-    orc.plan_ready.connect(on_plan, d)
-    orc.agent_event.connect(on_agent, d)
-    orc.integration_ready.connect(on_integration, d)
-    orc.verification_ready.connect(on_verification, d)
-    orc.report_ready.connect(on_report, d)
-    orc.awaiting_approval.connect(on_gate, d)
-    orc.run_finished.connect(on_finished, d)
-    orc.run_error.connect(on_error, d)
+    orc.log.connect(log, *_conn)
+    orc.deliberation_ready.connect(on_deliberation, *_conn)
+    orc.plan_ready.connect(on_plan, *_conn)
+    orc.agent_event.connect(on_agent, *_conn)
+    orc.integration_ready.connect(on_integration, *_conn)
+    orc.verification_ready.connect(on_verification, *_conn)
+    orc.report_ready.connect(on_report, *_conn)
+    orc.awaiting_approval.connect(on_gate, *_conn)
+    orc.run_finished.connect(on_finished, *_conn)
+    orc.run_error.connect(on_error, *_conn)
 
     _p(f"Задача: {args.task}")
     _p(f"Проект: {project['name']} ({project['local_path']})")
